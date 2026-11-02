@@ -1,0 +1,23 @@
+# Maintainer: ECHO Native
+pkgname=echo-native
+pkgver=0.2.1
+pkgrel=1
+pkgdesc='Native Qt launcher for Wuthering Waves translation on Linux'
+arch=('x86_64')
+url='https://github.com/bromhobit/ECHO-rusian-WUWA-launcher'
+license=('custom')
+depends=('qt6-base' 'sdl3' 'xxhash')
+makedepends=('cmake' 'pkgconf' 'gcc' 'make')
+source=("echo-native-source-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cmake -S "$srcdir/native" -B "$srcdir/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build "$srcdir/build" -j3
+}
+package() {
+  DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+  install -Dm644 "$srcdir/packaging/echo-native.desktop" "$pkgdir/usr/share/applications/echo-native.desktop"
+  install -Dm644 "$srcdir/packaging/echo-native.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/echo-native.svg"
+  install -Dm644 "$srcdir/packaging/LICENSE-PACKAGING" "$pkgdir/usr/share/licenses/echo-native/LICENSE"
+}

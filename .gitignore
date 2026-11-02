@@ -1,0 +1,12 @@
+build/
+cache/
+input/
+reports/
+research/
+.agents/
+*.log
+*.pyc
+__pycache__/
+.DS_Store
+release/PKGBUILD
+AGENTS.md
