@@ -2,7 +2,7 @@
 Type=Application
 Name=ECHO Native
 GenericName=Wuthering Waves Translation Launcher
-Comment=Русификатор Wuthering Waves для Linux
+Comment=Установка и управление русской локализацией Wuthering Waves
 Exec=echo-native
 Icon=echo-native
 Terminal=false

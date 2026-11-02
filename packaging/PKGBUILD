@@ -1,8 +1,8 @@
 # Maintainer: ECHO Native
 pkgname=echo-native
 pkgver=0.2.1
-pkgrel=1
-pkgdesc='Native Qt launcher for Wuthering Waves translation on Linux'
+pkgrel=2
+pkgdesc='Graphical Linux launcher for Wuthering Waves Russian localization'
 arch=('x86_64')
 url='https://github.com/bromhobit/ECHO-rusian-WUWA-launcher'
 license=('custom')
