@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QVersionNumber>
 #include <QJsonDocument>
 #include <QSaveFile>
 #include <QStorageInfo>
@@ -80,14 +81,66 @@ QString sha1File(const QString &path,QString *error) {
     QCryptographicHash h(QCryptographicHash::Sha1);while(!f.atEnd()){QByteArray b=f.read(4*1024*1024);if(b.isEmpty()&&f.error()!=QFile::NoError){if(error)*error=f.errorString();return {};}h.addData(b);}return QString::fromLatin1(h.result().toHex());
 }
 
+QString detectResourceVersion(const QString &gameRoot) {
+    const QString resources=gameRoot+"/Client/Saved/Resources";
+    const QDir dir(resources);
+    static const QRegularExpression versionPattern(R"(^[0-9]+(?:\.[0-9]+){1,3}$)");
+    QStringList versions;
+    for(const QString &version:dir.entryList(QDir::Dirs|QDir::NoDotAndDotDot)) {
+        if(!versionPattern.match(version).hasMatch()) continue;
+        const QFileInfo versionInfo(resources+"/"+version);
+        const QFileInfo mountDir(resources+"/"+version+"/Mount");
+        if(versionInfo.isSymLink()||!versionInfo.isDir()||mountDir.isSymLink()||!mountDir.isDir()) continue;
+        bool recognized=false;
+        for(const QString &name:QStringList{
+            "MountResource.txt", "MountResource_HD.txt", "MountLang_en.txt",
+            "MountLang_ja.txt", "MountLauncher.txt"}) {
+            const QFileInfo marker(mountDir.absoluteFilePath()+"/"+name);
+            if(marker.isFile()&&!marker.isSymLink()&&marker.size()>0) {recognized=true;break;}
+        }
+        if(recognized)versions<<version;
+    }
+    std::sort(versions.begin(),versions.end(),[](const QString &a,const QString &b){
+        return QVersionNumber::fromString(a)>QVersionNumber::fromString(b);
+    });
+    return versions.isEmpty()?QString():versions.first();
+}
+
+QString englishMountPreflight(const QString &gameRoot,const QString &resourceVersion) {
+    if(resourceVersion.isEmpty())
+        return "Версия игровых ресурсов не определена: не найдена папка версии с таблицами Mount. Установка перевода заблокирована.";
+    const QString path=gameRoot+"/Client/Saved/Resources/"+resourceVersion+"/Mount/MountLang_en.txt";
+    const QFileInfo file(path);
+    if(!file.isFile()||file.isSymLink()||!noSymlinkChain(path))
+        return QString("Ресурсы игры %1 обнаружены, но отсутствует штатный MountLang_en.txt. "
+                       "Установка русского перевода пока невозможна. Проверьте язык текста в настройках игры "
+                       "(English), запустите игру штатно и повторите проверку. "
+                       "Лаунчер не создаёт этот файл из другой языковой таблицы.").arg(resourceVersion);
+    if(!file.isReadable()||file.size()==0)
+        return "Английский MountLang_en.txt пуст или недоступен для чтения. Установка заблокирована.";
+    return {};
+}
+
 bool safeGameRoot(const QString &root,QString *error) {
-    QFileInfo r(root);if(!r.isDir()||r.isSymLink()||canonical(root).isEmpty()||!noSymlinkChain(root)){if(error)*error="Папка игры отсутствует либо содержит символическую ссылку.";return false;}
-    if(!QFileInfo(root+"/launcher.exe").isFile()||QFileInfo(root+"/launcher.exe").isSymLink()){if(error)*error="Корень не похож на установленную Wuthering Waves: launcher.exe не найден.";return false;}
+    const QFileInfo r(root);
+    if(!r.isDir()||r.isSymLink()||canonical(root).isEmpty()||!noSymlinkChain(root)) {
+        if(error)*error="Папка игры отсутствует либо содержит символическую ссылку.";
+        return false;
+    }
+    bool validLauncher=false;
+    for(const QString &name:QStringList{"launcher.exe","Wuthering Waves.exe"}) {
+        const QFileInfo exe(root+"/"+name);
+        if(exe.isFile()&&!exe.isSymLink()) {validLauncher=true;break;}
+    }
+    if(!validLauncher) {
+        if(error)*error="Не найден штатный launcher.exe или Wuthering Waves.exe.";
+        return false;
+    }
     const QString resources=root+"/Client/Saved/Resources";
-    if(!noSymlinkChain(resources)){if(error)*error="Путь ресурсов игры содержит символическую ссылку.";return false;}
-    QDir d(resources);QStringList versions;
-    for(const QString &v:d.entryList(QDir::Dirs|QDir::NoDotAndDotDot))if(QFileInfo(resources+"/"+v+"/Mount/MountLang_en.txt").isFile())versions<<v;
-    if(versions.isEmpty()){if(error)*error="Не найден MountLang_en.txt в ресурсах игры.";return false;}
+    if(!noSymlinkChain(resources)||detectResourceVersion(root).isEmpty()) {
+        if(error)*error="Не найдены корректные ресурсы Wuthering Waves или путь содержит символическую ссылку.";
+        return false;
+    }
     return true;
 }
 
@@ -307,6 +360,38 @@ Result repair(const QString &appDataPath,const QString &currentResourceVersion) 
 }
 
 int runAutoInstallTests() {
+    QTemporaryDir missingEnglish;
+    if(!missingEnglish.isValid())return 1;
+    const QString steamRoot=missingEnglish.path()+"/Steam Wuthering Waves";
+    const QString versions=steamRoot+"/Client/Saved/Resources";
+    const QString v370=versions+"/3.7.0/Mount",v380=versions+"/3.8.0/Mount";
+    if(!QDir().mkpath(v370) || !QDir().mkpath(v380))return 1;
+    {
+        QFile exe(steamRoot+"/Wuthering Waves.exe");
+        if(!exe.open(QIODevice::WriteOnly)||exe.write("steam")!=5)return 1;
+        exe.close();
+        QFile japanese(v370+"/MountLang_ja.txt");
+        if(!japanese.open(QIODevice::WriteOnly)||japanese.write("::Mount::\n::Del::\n")<0)return 1;
+        japanese.close();
+        QFile resource(v370+"/MountResource.txt");
+        if(!resource.open(QIODevice::WriteOnly)||resource.write("::Mount::\n::Del::\n")<0)return 1;
+        resource.close();
+    }
+    QString rootError;
+    if(detectResourceVersion(steamRoot)!="3.7.0"||
+       !safeGameRoot(steamRoot,&rootError)||
+       !englishMountPreflight(steamRoot,"3.7.0").contains("отсутствует штатный MountLang_en.txt")||
+       QFileInfo::exists(v370+"/MountLang_en.txt")) {
+        fprintf(stderr,"FAIL: Steam resources must be detected without inventing an English Mount: %s\n",qPrintable(rootError));
+        return 1;
+    }
+    {
+        QFile resource(v380+"/MountResource.txt");
+        if(!resource.open(QIODevice::WriteOnly)||resource.write("::Mount::\n::Del::\n")<0)return 1;
+        resource.close();
+    }
+    if(detectResourceVersion(steamRoot)!="3.8.0")return 1;
+    if(!QFile::remove(v380+"/MountResource.txt") || detectResourceVersion(steamRoot)!="3.7.0")return 1;
     QTemporaryDir temp;if(!temp.isValid())return 1;const QString root=temp.path()+"/game",res=root+"/Client/Saved/Resources/3.7.0",mount=res+"/Mount/MountLang_en.txt",app=temp.path()+"/app",pak=temp.path()+"/translation.pak";
     QDir().mkpath(res+"/Mount");QDir().mkpath(app);
     QByteArray original="\xEF\xBB\xBF::Mount::\r\nLang_en/Base/pakchunk10-WindowsNoEditor,4,89C6309745252902C297007F3EB3D2C50807AF3A,EE7F1D1A2027E4367E45797CE56A3286202D778D,,\r\nLang_en/3.7.6/pakchunk10-WindowsNoEditor_P,10,17D0D8925FCC399BE97960D161D3767F4FBA957E,ACD316833F62174D5CDC437C0A3E4252C5E7740F,,\r\n::Del::\r\n";
@@ -337,6 +422,6 @@ int runAutoInstallTests() {
     QByteArray malformed="::Mount::\n::Mount::\n::Del::\n";QByteArray out;if(EchoInstall::transformMount(malformed,"x",&out,false,&err))return 1;
     const QString link=root+"/Client/Saved/Resources/3.7.0/linked";QFile::link(res+"/Mount",link);if(QFileInfo(link).isSymLink()&&noSymlinkChain(link+"/MountLang_en.txt"))return 1;
     if(install(root,"3.7.0","over","3.8",pak,xxh,app).ok)return 1;
-    fprintf(stdout,"PASS: fake Steam game install, cross-version/channel update, journal+SHA-1 inspection, changed resource/hash detection, missing-entry repair, uninstall, XXH64, BOM+CRLF and third-party preservation, malformed Mount/version/symlink rejection\n");return 0;
+    fprintf(stdout,"PASS: Steam install without English Mount, resource-version fallback, fake Steam game install, cross-version/channel update, journal+SHA-1 inspection, changed resource/hash detection, missing-entry repair, uninstall, XXH64, BOM+CRLF and third-party preservation, malformed Mount/version/symlink rejection\n");return 0;
 }
 }

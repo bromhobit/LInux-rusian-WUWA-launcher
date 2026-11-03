@@ -5,8 +5,8 @@ out="$root/release"
 stage="$root/build/arch-package"
 mkdir -p "$out" "$stage"
 cp "$root/packaging/PKGBUILD" "$stage/PKGBUILD"
-tar -czf "$stage/echo-native-source-0.2.2.tar.gz" -C "$root" native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
-checksum="$(sha256sum "$stage/echo-native-source-0.2.2.tar.gz" | awk '{print $1}')"
+tar -czf "$stage/echo-native-source-0.2.3.tar.gz" -C "$root" native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
+checksum="$(sha256sum "$stage/echo-native-source-0.2.3.tar.gz" | awk '{print $1}')"
 sed -i "s/^sha256sums=.*/sha256sums=('$checksum')/" "$stage/PKGBUILD"
 (cd "$stage" && makepkg --force --clean --noconfirm)
 pkgver="$(sed -n 's/^pkgver=//p' "$stage/PKGBUILD")"
