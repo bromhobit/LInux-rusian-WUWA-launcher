@@ -1,6 +1,6 @@
 # Maintainer: ECHO Native
 pkgname=echo-native
-pkgver=0.2.2
+pkgver=0.2.3
 pkgrel=1
 pkgdesc='Graphical Linux launcher for Wuthering Waves Russian localization'
 arch=('x86_64')
@@ -9,7 +9,7 @@ license=('custom')
 depends=('qt6-base' 'sdl3' 'xxhash')
 makedepends=('cmake' 'pkgconf' 'gcc' 'make' 'python' 'binutils')
 source=("echo-native-source-${pkgver}.tar.gz")
-sha256sums=('81d50a3ee57511b30aa034d831efe69e7c9770025e9f1b1578b6c81a40a166f9')
+sha256sums=('001b16e08bc23439841f6f598238ecee788e9f0a48aba32d3e5d7cf3e54819ac')
 
 build() {
   # CachyOS may set -march=native to AVX-512 on the build host.

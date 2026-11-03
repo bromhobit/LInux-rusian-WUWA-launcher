@@ -21,6 +21,8 @@ struct Inspection {
 };
 
 QString sha1File(const QString &path, QString *error = nullptr);
+QString detectResourceVersion(const QString &gameRoot);
+QString englishMountPreflight(const QString &gameRoot, const QString &resourceVersion);
 bool safeGameRoot(const QString &root, QString *error = nullptr);
 struct GameProcess {
     qint64 pid{};
