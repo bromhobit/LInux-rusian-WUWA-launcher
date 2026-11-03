@@ -1,22 +1,32 @@
 # Maintainer: ECHO Native
 pkgname=echo-native
-pkgver=0.2.1
-pkgrel=2
+pkgver=0.2.2
+pkgrel=1
 pkgdesc='Graphical Linux launcher for Wuthering Waves Russian localization'
 arch=('x86_64')
-url='https://github.com/bromhobit/ECHO-rusian-WUWA-launcher'
+url='https://github.com/bromhobit/LInux-rusian-WUWA-launcher'
 license=('custom')
 depends=('qt6-base' 'sdl3' 'xxhash')
-makedepends=('cmake' 'pkgconf' 'gcc' 'make')
+makedepends=('cmake' 'pkgconf' 'gcc' 'make' 'python' 'binutils')
 source=("echo-native-source-${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
 build() {
+  # CachyOS may set -march=native to AVX-512 on the build host.
+  # A distribution package must not inherit the host ISA.
+  export CFLAGS='-O2 -pipe -march=x86-64 -mtune=generic -fexceptions -fno-plt'
+  export CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
   cmake -S "$srcdir/native" -B "$srcdir/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
   cmake --build "$srcdir/build" -j3
 }
+check() {
+  QT_QPA_PLATFORM=offscreen "$srcdir/build/echo-native" --smoke-test
+  QT_QPA_PLATFORM=offscreen "$srcdir/build/echo-native" --ui-test
+  QT_QPA_PLATFORM=offscreen "$srcdir/build/echo-native" --controller-test
+}
 package() {
   DESTDIR="$pkgdir" cmake --install "$srcdir/build"
+  python "$srcdir/packaging/normalize-elf-isa.py" "$pkgdir/usr/bin/echo-native"
   install -Dm644 "$srcdir/packaging/echo-native.desktop" "$pkgdir/usr/share/applications/echo-native.desktop"
   install -Dm644 "$srcdir/packaging/echo-native.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/echo-native.svg"
   install -Dm644 "$srcdir/packaging/LICENSE-PACKAGING" "$pkgdir/usr/share/licenses/echo-native/LICENSE"
