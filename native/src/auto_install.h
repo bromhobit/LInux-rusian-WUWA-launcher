@@ -10,6 +10,7 @@ struct Inspection {
     bool owned{};
     bool healthy{};
     bool repairable{};
+    bool reinstallable{};
     bool resourceVersionChanged{};
     bool selectedChannelDiffers{};
     bool packageDiffers{};
@@ -46,3 +47,4 @@ Inspection inspect(const QString &appDataPath, const QString &gameRoot,
 Result repair(const QString &appDataPath, const QString &currentResourceVersion);
 int runAutoInstallTests();
 }
+
