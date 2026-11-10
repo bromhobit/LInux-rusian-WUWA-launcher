@@ -18,11 +18,11 @@ ECHO Native помогает установить, обновить и восс�
 Для **Arch Linux** и **CachyOS** доступен готовый пакет.
 
 1. Откройте [последний выпуск](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/releases/latest).
-2. Скачайте `echo-native-0.2.3-1-x86_64.pkg.tar.zst`.
+2. Скачайте `echo-native-0.2.3.1-1-x86_64.pkg.tar.zst`.
 3. Установите пакет:
 
 ```bash
-sudo pacman -U ./echo-native-0.2.3-1-x86_64.pkg.tar.zst
+sudo pacman -U ./echo-native-0.2.3.1-1-x86_64.pkg.tar.zst
 ```
 
 После установки запустите **ECHO Native** из меню приложений.

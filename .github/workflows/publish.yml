@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/publish.yml'
-      - 'release/echo-native-0.2.3-1-x86_64.pkg.tar.zst'
+      - 'release/echo-native-0.2.3.1-1-x86_64.pkg.tar.zst'
+      - 'release/echo-native-source-0.2.3.1.tar.gz'
+      - 'release/PKGBUILD'
       - 'release/SHA256SUMS'
       - 'packaging/Dockerfile.oci'
       - 'docs/RELEASE-NOTES.md'
@@ -30,10 +32,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view v0.2.3 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v0.2.3 release/echo-native-0.2.3-1-x86_64.pkg.tar.zst release/SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view v0.2.3.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.2.3.1 release/echo-native-0.2.3.1-1-x86_64.pkg.tar.zst release/SHA256SUMS release/PKGBUILD release/echo-native-source-0.2.3.1.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.2.3 release/echo-native-0.2.3-1-x86_64.pkg.tar.zst release/SHA256SUMS --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ECHO Native 0.2.3" --notes-file docs/RELEASE-NOTES.md
+            gh release create v0.2.3.1 release/echo-native-0.2.3.1-1-x86_64.pkg.tar.zst release/SHA256SUMS release/PKGBUILD release/echo-native-source-0.2.3.1.tar.gz --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "ECHO Native 0.2.3.1" --notes-file docs/RELEASE-NOTES.md
           fi
 
       - name: Log in to GitHub Container Registry
@@ -50,5 +52,6 @@ jobs:
           file: packaging/Dockerfile.oci
           push: true
           tags: |
-            ghcr.io/bromhobit/echo-native:0.2.3-1
+            ghcr.io/bromhobit/echo-native:0.2.3.1-1
             ghcr.io/bromhobit/echo-native:latest
+

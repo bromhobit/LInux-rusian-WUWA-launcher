@@ -2,7 +2,8 @@ FROM scratch
 LABEL org.opencontainers.image.title="ECHO Native"
 LABEL org.opencontainers.image.description="Лаунчер Wuthering Waves для установки и управления русской текстовой локализацией на Linux."
 LABEL org.opencontainers.image.source="https://github.com/bromhobit/LInux-rusian-WUWA-launcher"
-LABEL org.opencontainers.image.version="0.2.3"
+LABEL org.opencontainers.image.version="0.2.3.1"
 LABEL org.opencontainers.image.vendor="ECHO Native"
-COPY release/echo-native-0.2.3-1-x86_64.pkg.tar.zst /dist/echo-native-0.2.3-1-x86_64.pkg.tar.zst
+COPY release/echo-native-0.2.3.1-1-x86_64.pkg.tar.zst /dist/echo-native-0.2.3.1-1-x86_64.pkg.tar.zst
 COPY release/SHA256SUMS /dist/SHA256SUMS
+
