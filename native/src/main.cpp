@@ -796,10 +796,11 @@ private:
         if(state.healthy){if(state.selectedChannelDiffers)primary="Сменить перевод";else if(state.packageDiffers)primary="Обновить перевод";else primary="Перевод установлен";}
         else if(state.owned&&state.resourceVersionChanged)primary="Установить для новой версии";
         else if(state.repairable)primary="Восстановить перевод";
+        else if(state.reinstallable)primary="Установить перевод повторно";
         else if(state.owned&&!state.healthy)primary="Файлы требуют проверки";
         autoInstallBtn->setText(primary);
         autoInstallBtn->setVisible(!(state.healthy&&!state.selectedChannelDiffers&&!state.packageDiffers));
-        autoInstallBtn->setEnabled(!busyNetwork&&games.size()==1&&(state.repairable||!state.owned||(state.healthy&&(state.selectedChannelDiffers||state.packageDiffers)))&&!(state.owned&&state.resourceVersionChanged));
+        autoInstallBtn->setEnabled(!busyNetwork&&games.size()==1&&(state.repairable||state.reinstallable||!state.owned||(state.healthy&&(state.selectedChannelDiffers||state.packageDiffers)))&&!(state.owned&&state.resourceVersionChanged));
         QString reason;
         stopBackgroundBtn->hide();
         if(games.size()>1)
@@ -890,7 +891,7 @@ private:
         const QString installed=installedResourceVersion();
         const auto games=discoverWutheringInstallations(steamRoots());
         const auto state=selectedInstallState();
-        if(state.owned){versionStatus->setText(state.healthy?"Установлен · "+state.channel+" v"+state.translationVersion:(state.repairable?"Нужна проверка Mount":"Нарушена целостность"));channelStatus->setText(it==manifests.cend()?state.message+" · проверка обновления доступна вручную.":state.message);return;}
+        if(state.owned){versionStatus->setText(state.healthy?"Установлен · "+state.channel+" v"+state.translationVersion:(state.repairable?"Нужна проверка Mount":(state.reinstallable?"Требуется повторная установка":"Нарушена целостность")));channelStatus->setText(it==manifests.cend()?state.message+" · проверка обновления доступна вручную.":state.message);return;}
         if(it==manifests.cend()){
             versionStatus->setText("Не проверено");
             if(installed.isEmpty()) channelStatus->setText("Выберите канал и проверьте наличие обновления.");
@@ -1260,3 +1261,4 @@ int main(int argc,char **argv){
     window.show();
     return app.exec();
 }
+

@@ -25,6 +25,7 @@ constexpr auto PakName = "pakchunk0-WindowsNoEditor_10100_P.pak";
 QString canonical(const QString &p) { return QFileInfo(p).canonicalFilePath(); }
 bool noSymlinkChain(const QString &path) {
     QFileInfo info(QDir::cleanPath(QFileInfo(path).absoluteFilePath()));
+    if(info.isSymLink()) return false; // includes dangling symlinks
     QString current=info.exists()?info.absoluteFilePath():info.absolutePath();
     while(!current.isEmpty()) {
         QFileInfo part(current);
@@ -74,6 +75,37 @@ bool xxh64Matches(const QString &path,const QString &expected,QString *error) {
 }
 QJsonObject readJournal(const QString &path) { QString e;auto b=readAll(path,&e);auto d=QJsonDocument::fromJson(b);return d.isObject()?d.object():QJsonObject(); }
 bool writeJournal(const QString &path,const QJsonObject &o,QString *error) {return writeAtomic(path,QJsonDocument(o).toJson(QJsonDocument::Indented),error);}
+// Reject journals targeting a Mount table supported only by newer versions.
+bool isEnglishMountJournal(const QJsonObject &journal) {
+    return journal.value("mountTable").toString("MountLang_en.txt")=="MountLang_en.txt";
+}
+
+// The journal is evidence of an earlier install, not authority to overwrite
+// unknown files. Offer reinstall only if its exact PAK is absent and the
+// recorded Mount is readable, well formed, and has no conflicting ECHO line.
+bool canReinstallMissingPak(const QJsonObject &j,const QString &root,const QString &version) {
+    static const QRegularExpression versionRe("^[0-9]+(?:\\.[0-9]+){1,3}$");
+    static const QRegularExpression hashRe("^[0-9a-f]{40}$");
+    if(root.isEmpty() || canonical(root).isEmpty() || canonical(root)!=j.value("gameRoot").toString() ||
+       !versionRe.match(version).hasMatch() || version!=j.value("resourceVersion").toString()) return false;
+    const QString expectedPak=root+"/Client/Saved/Resources/"+version+"/"+QString::fromLatin1(OwnedRelative)+".pak";
+    const QString pak=j.value("pakPath").toString();
+    const QString sha=j.value("sha1").toString();
+    const QByteArray entry=j.value("entry").toString().toUtf8();
+    if(pak!=expectedPak || !hashRe.match(sha).hasMatch() ||
+       entry!=(QString::fromLatin1(OwnedRelative)+",10100,"+sha+",,,").toUtf8()) return false;
+    const QFileInfo pakInfo(pak);
+    if(pakInfo.exists() || pakInfo.isSymLink() || !noSymlinkChain(pak)) return false;
+    if(!isEnglishMountJournal(j)) return false;
+    const QString mount=root+"/Client/Saved/Resources/"+version+"/Mount/MountLang_en.txt";
+    if(!noSymlinkChain(mount) || !QFileInfo(mount).isFile()) return false;
+    const QByteArray bytes=readAll(mount,nullptr);
+    if(bytes.isEmpty()) return false;
+    QByteArray removed; QString error;
+    if(!transformMount(bytes,{},&removed,true,&error)) return false;
+    return hasExactLine(bytes,entry) || removed==bytes;
+}
+
 }
 
 QString sha1File(const QString &path,QString *error) {
@@ -214,7 +246,13 @@ bool terminateBackgroundUpdaters(const QString &gameRoot,QString *message) {
 bool transformMount(const QByteArray &original,const QByteArray &entry,QByteArray *updated,bool remove,QString *error) {
     QByteArray bom; QByteArray body=original;if(body.startsWith("\xEF\xBB\xBF")){bom=body.left(3);body.remove(0,3);}
     const bool crlf=body.contains("\r\n");const QByteArray newline=crlf?"\r\n":"\n";
-    if(body.contains('\r')&&!crlf){if(error)*error="Формат Mount содержит неизвестные переводы строк.";return false;}
+    for(int i=0;i<body.size();++i){
+        if((body[i]=='\r'&&(i+1>=body.size()||body[i+1]!='\n'))||
+           (body[i]=='\n'&&crlf&&(i==0||body[i-1]!='\r'))){
+            if(error)*error="Формат Mount содержит смешанные или неизвестные переводы строк.";
+            return false;
+        }
+    }
     const bool hadTrailingNewline=body.endsWith('\n');QList<QByteArray> lines=body.split('\n');if(hadTrailingNewline&&!lines.isEmpty())lines.removeLast();for(auto &line:lines)if(line.endsWith('\r'))line.chop(1);
     int mount=-1,del=-1,owned=-1;
     const QByteArray prefix="Lang_en/RU/pakchunk0-WindowsNoEditor_10100_P,";
@@ -243,8 +281,10 @@ Result install(const QString &gameRoot,const QString &resourceVersion,const QStr
     const QString targetPak=targetDir+"/"+PakName;const QString journalPath=appDataPath+"/translation-install.json";
     if(!noSymlinkChain(targetPak))return {false,"Путь целевого PAK содержит символическую ссылку."};
     QJsonObject prior=readJournal(journalPath);const bool owned=prior.value("pakPath").toString()==targetPak;
+    if(!prior.isEmpty()&&!isEnglishMountJournal(prior))return {false,"Журнал относится к другой таблице Mount; установка заблокирована."};
+    const bool reinstall=owned&&canReinstallMissingPak(prior,gameRoot,resourceVersion);
     if(QFileInfo::exists(targetPak)&&!owned)return {false,"В целевой папке уже есть неизвестный файл. Он не будет заменён."};
-    if(owned){QString oldErr;if(sha1File(targetPak,&oldErr)!=prior.value("sha1").toString())return {false,"Установленный PAK изменён или неизвестен; обновление остановлено."};}
+    if(owned){QString oldErr;if(!reinstall&&sha1File(targetPak,&oldErr)!=prior.value("sha1").toString())return {false,"Установленный PAK изменён или неизвестен; обновление остановлено."};}
     if(!QDir().mkpath(targetDir)||QFileInfo(targetDir).isSymLink()||!noSymlinkChain(targetDir))return {false,"Не удалось безопасно создать папку перевода."};
     const QByteArray oldMount=readAll(mountPath,&error);if(oldMount.isEmpty())return {false,"Не удалось прочитать MountLang_en.txt: "+error};
     const QString sha1=sha1File(cachedPak,&error);if(sha1.isEmpty())return {false,"Не удалось вычислить SHA-1 пакета: "+error};
@@ -252,18 +292,23 @@ Result install(const QString &gameRoot,const QString &resourceVersion,const QStr
     if(owned){
         // Only replace a Mount entry that still exactly matches our own journal.
         const QByteArray priorEntry=prior.value("entry").toString().toUtf8();
-        if(priorEntry.isEmpty()||!hasExactLine(oldMount,priorEntry))return {false,"Предыдущая запись ECHO в Mount изменилась; обновление остановлено."};
+        if(priorEntry.isEmpty()||(!reinstall&&!hasExactLine(oldMount,priorEntry)))return {false,"Предыдущая запись ECHO в Mount изменилась; обновление остановлено."};
         QByteArray withoutOwned;
         if(!transformMount(oldMount,{},&withoutOwned,true,&error)||
            !transformMount(withoutOwned,entry,&newMount,false,&error))return {false,error};
     }else if(!transformMount(oldMount,entry,&newMount,false,&error))return {false,error};
     const QString tx=transactionDir(appDataPath);if(tx.isEmpty())return {false,"Не удалось создать каталог резервных копий."};
+    if(reinstall&&!copyAtomic(journalPath,tx+"/translation-install.json",&error))return {false,"Не удалось сохранить прежний журнал: "+error};
     const QString mountBackup=tx+"/MountLang_en.txt";if(!writeAtomic(mountBackup,oldMount,&error))return {false,"Не удалось сохранить Mount backup: "+error};
     const QString originalBackup=owned?prior.value("originalMountBackup").toString():mountBackup;
     QString previousPakBackup;
-    if(owned){previousPakBackup=tx+"/previous-translation.pak";if(!copyAtomic(targetPak,previousPakBackup,&error))return {false,"Не удалось сохранить старый PAK: "+error};}
+    if(owned&&!reinstall){previousPakBackup=tx+"/previous-translation.pak";if(!copyAtomic(targetPak,previousPakBackup,&error))return {false,"Не удалось сохранить старый PAK: "+error};}
     const bool hadPak=QFileInfo::exists(targetPak);
     auto rollbackPak=[&](){if(hadPak)return copyAtomic(previousPakBackup,targetPak,nullptr);return !QFileInfo::exists(targetPak)||QFile::remove(targetPak);};
+    // Recheck after download and backup, immediately before writing.
+    if(reinstall&&(!canReinstallMissingPak(prior,gameRoot,resourceVersion)||
+                   readAll(mountPath,nullptr)!=oldMount||readJournal(journalPath)!=prior))
+        return {false,"Состояние перевода изменилось; повторная установка остановлена."};
     if(!copyAtomic(cachedPak,targetPak,&error))return {false,"Не удалось записать перевод: "+error};
     if(sha1File(targetPak,&error)!=sha1){rollbackPak();return {false,"Установленный PAK не прошёл SHA-1; выполнен откат."};}
     if(!writeAtomic(mountPath,newMount,&error)){rollbackPak();return {false,"Mount не записан, PAK восстановлен: "+error};}
@@ -278,6 +323,7 @@ Result install(const QString &gameRoot,const QString &resourceVersion,const QStr
 Result uninstall(const QString &appDataPath) {
     const QString journalPath=appDataPath+"/translation-install.json";QJsonObject j=readJournal(journalPath);if(j.isEmpty())return {false,"Нет действующей записи об установке ECHO."};
     const QString game=j.value("gameRoot").toString(),version=j.value("resourceVersion").toString(),pak=j.value("pakPath").toString();QString error;
+    if(!isEnglishMountJournal(j))return {false,"Журнал относится к другой таблице Mount; удаление заблокировано."};
     if(!safeGameRoot(game,&error))return {false,error};
     if(gameRunning(game))return {false,"Закройте Wuthering Waves перед удалением перевода."};
     const QString resources=game+"/Client/Saved/Resources",mount=resources+"/"+version+"/Mount/MountLang_en.txt";
@@ -316,6 +362,7 @@ Inspection inspect(const QString &appDataPath,const QString &gameRoot,const QStr
     Inspection s;s.currentResourceVersion=currentResourceVersion;
     const QJsonObject j=readJournal(appDataPath+"/translation-install.json");
     if(j.isEmpty()){s.message="Перевод не установлен.";return s;}
+    if(!isEnglishMountJournal(j)){s.owned=true;s.message="Журнал относится к другой таблице Mount; управление заблокировано.";return s;}
     const QString recordedRoot=j.value("gameRoot").toString();
     if(recordedRoot.isEmpty()||(!gameRoot.isEmpty()&&canonical(gameRoot)!=recordedRoot)){s.message="Есть запись ECHO для другой установки игры.";return s;}
     s.owned=true;s.channel=j.value("channel").toString();s.translationVersion=j.value("translationVersion").toString();s.installedResourceVersion=j.value("resourceVersion").toString();
@@ -328,12 +375,14 @@ Inspection inspect(const QString &appDataPath,const QString &gameRoot,const QStr
     const QByteArray entry=j.value("entry").toString().toUtf8();const bool lineOk=mountReadable&&!entry.isEmpty()&&hasExactLine(bytes,entry);
     s.healthy=pakOk&&lineOk;
     s.repairable=pakOk&&!lineOk&&!s.resourceVersionChanged&&mountReadable&&!entry.isEmpty();
+    s.reinstallable=!pakOk&&canReinstallMissingPak(j,recordedRoot,currentResourceVersion);
     if(s.healthy){
         if(s.resourceVersionChanged)s.message=QString("Перевод сохранён в ресурсах %1; обнаружена текущая версия %2.").arg(s.installedResourceVersion,currentResourceVersion);
         else if(s.selectedChannelDiffers)s.message=QString("Установлен %1 v%2. Выбран канал %3.").arg(s.channel,s.translationVersion,selectedChannel);
         else if(s.packageDiffers)s.message=QString("Установлен %1 v%2; доступен другой пакет выбранного канала.").arg(s.channel,s.translationVersion);
         else s.message=QString("Перевод установлен и проверен: %1 v%2.").arg(s.channel,s.translationVersion);
-    } else if(!pakOk)s.message="Установленный PAK отсутствует или его SHA-1 изменён. Удаление и восстановление заблокированы.";
+    } else if(s.reinstallable)s.message="PAK перевода отсутствует. Можно установить перевод повторно; совместимость с микропатчем не подтверждена.";
+    else if(!pakOk)s.message="Установленный PAK отсутствует или его SHA-1 изменён. Удаление и восстановление заблокированы.";
     else if(s.resourceVersionChanged)s.message=QString("PAK принадлежит ресурсам %1, текущие ресурсы %2. Автоматическое перенесение запрещено.").arg(s.installedResourceVersion,currentResourceVersion);
     else if(s.repairable)s.message="PAK проверен, но запись Mount отсутствует. Файлы можно восстановить.";
     else s.message="Файлы установки повреждены или Mount недоступен; автоматическое исправление невозможно.";
@@ -342,6 +391,7 @@ Inspection inspect(const QString &appDataPath,const QString &gameRoot,const QStr
 
 Result repair(const QString &appDataPath,const QString &currentResourceVersion) {
     const QString journalPath=appDataPath+"/translation-install.json";const QJsonObject j=readJournal(journalPath);
+    if(!isEnglishMountJournal(j))return {false,"Журнал относится к другой таблице Mount; восстановление заблокировано."};
     if(j.isEmpty())return {false,"Не найдена принадлежащая ECHO запись установки."};
     const QString game=j.value("gameRoot").toString(),version=j.value("resourceVersion").toString();QString error;
     if(!safeGameRoot(game,&error))return {false,error};
@@ -413,6 +463,97 @@ int runAutoInstallTests() {
     const QString xxh2=QString::number(XXH64(payload2.constData(),size_t(payload2.size()),0),16).rightJustified(16,'0');
     result=install(root,"3.7.0","aniwie","3.7.1",pak2,xxh2,app);if(!result.ok){fprintf(stderr,"FAIL: update: %s\n",qPrintable(result.message));return 1;}
     mf.close();if(!mf.open(QIODevice::ReadOnly))return 1;patched=mf.readAll();const QByteArray ownedPrefix="Lang_en/RU/pakchunk0-WindowsNoEditor_10100_P,";if(!patched.contains(EchoInstall::sha1File(pak2).toLatin1())||patched.count(ownedPrefix)!=1||EchoInstall::sha1File(target)!=EchoInstall::sha1File(pak2)||!EchoInstall::installedStatus(app,root).startsWith("Установлен: aniwie v3.7.1")){fprintf(stderr,"FAIL: updated Mount entry or package verification\n");return 1;}
+    // A game update can remove the PAK, the Mount entry, or both while leaving
+    // our journal intact. Exercise recovery only inside this synthetic tree.
+    const QByteArray priorJournal=readAll(app+"/translation-install.json",nullptr);
+    QByteArray cleanMount;
+    if(!transformMount(patched,{},&cleanMount,true,&err)||!QFile::remove(target)||!put(mount,cleanMount))return 1;
+    auto missing=inspect(app,root,"3.7.0","over",xxh);
+    if(!missing.reinstallable || missing.healthy || missing.repairable ||
+       readAll(app+"/translation-install.json",nullptr)!=priorJournal || readAll(mount,nullptr)!=cleanMount){
+        fprintf(stderr,"FAIL: missing PAK and Mount entry not safely detected\n");return 1;
+    }
+    if(inspect(app,root,"3.8.0","over",xxh).reinstallable || inspect(app,root,{},"over",xxh).reinstallable){
+        fprintf(stderr,"FAIL: missing PAK recovery accepted an unknown or changed resource version\n");return 1;
+    }
+    // A newer launcher may have created a journal for another Mount table.
+    // This older build must not touch it even for a different game directory.
+    QJsonObject otherMount=QJsonDocument::fromJson(priorJournal).object();
+    otherMount.insert("mountTable","MountResource.txt");
+    if(!writeJournal(app+"/translation-install.json",otherMount,&err))return 1;
+    const auto unsupported=inspect(app,root,"3.7.0","over",xxh);
+    const QString otherGame=temp.path()+"/other-game";
+    const QString otherTable=otherGame+"/Client/Saved/Resources/3.7.0/Mount";
+    if(!QDir().mkpath(otherTable)||!put(otherGame+"/launcher.exe","fixture")||
+       !put(otherTable+"/MountLang_en.txt",cleanMount))return 1;
+    if(!unsupported.owned||unsupported.reinstallable||unsupported.healthy||
+       install(root,"3.7.0","over","3.7",pak,xxh,app).ok||
+       install(otherGame,"3.7.0","over","3.7",pak,xxh,app).ok||
+       uninstall(app).ok||repair(app,"3.7.0").ok||
+       readJournal(app+"/translation-install.json")!=otherMount||
+       readAll(otherTable+"/MountLang_en.txt",nullptr)!=cleanMount){
+        fprintf(stderr,"FAIL: journal for unsupported Mount table accepted\n");return 1;
+    }
+    if(!writeAtomic(app+"/translation-install.json",priorJournal,&err))return 1;
+    QByteArray mixed=patched;
+    const int firstCrlf=mixed.indexOf("\r\n");
+    if(firstCrlf<0)return 1;
+    mixed.remove(firstCrlf,1); // Keep the exact owned line but mix LF and CRLF.
+    if(!put(mount,mixed)||inspect(app,root,"3.7.0","over",xxh).reinstallable||
+       install(root,"3.7.0","over","3.7",pak,xxh,app).ok||readAll(mount,nullptr)!=mixed){
+        fprintf(stderr,"FAIL: mixed Mount line endings accepted or rewritten\n");return 1;
+    }
+    // No line, exact old line, conflicting line, malformed table and dangling
+    // symlink must be distinguished without changing the files.
+    QByteArray foreign=cleanMount;foreign.replace("::Del::",ownedPrefix+"10100,0000000000000000000000000000000000000000,,,\r\n::Del::");
+    if(!put(mount,foreign)||inspect(app,root,"3.7.0","over",xxh).reinstallable||
+       install(root,"3.7.0","over","3.7",pak,xxh,app).ok||readAll(mount,nullptr)!=foreign){
+        fprintf(stderr,"FAIL: conflicting ECHO Mount line accepted\n");return 1;
+    }
+    if(!put(mount,"::Mount::\n::Mount::\n::Del::\n") || inspect(app,root,"3.7.0","over",xxh).reinstallable ||
+       install(root,"3.7.0","over","3.7",pak,xxh,app).ok){
+        fprintf(stderr,"FAIL: malformed Mount accepted\n");return 1;
+    }
+    if(!put(mount,cleanMount))return 1;
+    if(::symlink(QFile::encodeName(temp.path()+"/missing-file").constData(),QFile::encodeName(target).constData())!=0)return 1;
+    if(inspect(app,root,"3.7.0","over",xxh).reinstallable||install(root,"3.7.0","over","3.7",pak,xxh,app).ok){
+        fprintf(stderr,"FAIL: dangling PAK symlink accepted\n");return 1;
+    }
+    if(!QFile::remove(target)||!put(target,"changed PAK"))return 1;
+    if(inspect(app,root,"3.7.0","over",xxh).reinstallable||install(root,"3.7.0","over","3.7",pak,xxh,app).ok||
+       readAll(target,nullptr)!="changed PAK"){
+        fprintf(stderr,"FAIL: changed PAK accepted or overwritten\n");return 1;
+    }
+    if(!QFile::remove(target))return 1;
+    // A failed journal commit must restore the updated game's Mount and leave
+    // the PAK missing, retaining the old journal for a later retry.
+    if(::geteuid()!=0){
+        const auto oldPermissions=QFile::permissions(app);
+        if(!QFile::setPermissions(app,QFileDevice::ReadOwner|QFileDevice::ExeOwner))return 1;
+        const auto failed=install(root,"3.7.0","over","3.7",pak,xxh,app);
+        if(!QFile::setPermissions(app,oldPermissions))return 1;
+        if(failed.ok || !failed.message.startsWith("Не удалось сохранить журнал;") ||
+           QFileInfo::exists(target) || readAll(mount,nullptr)!=cleanMount ||
+           readAll(app+"/translation-install.json",nullptr)!=priorJournal){
+            fprintf(stderr,"FAIL: failed journal commit did not roll back reinstall\n");return 1;
+        }
+    }
+    result=install(root,"3.7.0","over","3.7",pak,xxh,app);
+    if(!result.ok||!inspect(app,root,"3.7.0","over",xxh).healthy||
+       !readAll(mount,nullptr).contains(third)||readAll(mount,nullptr).count(ownedPrefix)!=1){
+        fprintf(stderr,"FAIL: reinstall with removed Mount line: %s\n",qPrintable(result.message));return 1;
+    }
+    bool journalBackedUp=false;
+    const QDir backups(app+"/backups/translation");
+    for(const QString &name:backups.entryList(QDir::Dirs|QDir::NoDotAndDotDot))
+        if(readAll(backups.filePath(name+"/translation-install.json"),nullptr)==priorJournal)journalBackedUp=true;
+    if(!journalBackedUp){fprintf(stderr,"FAIL: old journal was not backed up\n");return 1;}
+    // PAK missing but the exact journal-owned Mount line survives.
+    if(!QFile::remove(target)||!inspect(app,root,"3.7.0","over",xxh).reinstallable)return 1;
+    result=install(root,"3.7.0","over","3.7",pak,xxh,app);
+    if(!result.ok||!inspect(app,root,"3.7.0","over",xxh).healthy||readAll(mount,nullptr).count(ownedPrefix)!=1){
+        fprintf(stderr,"FAIL: reinstall with retained Mount line: %s\n",qPrintable(result.message));return 1;
+    }
     // Simulate Steam verifier discarding only our Mount entry before removal.
     QByteArray restored;mf.close();if(!mf.open(QIODevice::ReadOnly))return 1;
     const QByteArray beforeMissing=mf.readAll();
@@ -425,3 +566,4 @@ int runAutoInstallTests() {
     fprintf(stdout,"PASS: Steam install without English Mount, resource-version fallback, fake Steam game install, cross-version/channel update, journal+SHA-1 inspection, changed resource/hash detection, missing-entry repair, uninstall, XXH64, BOM+CRLF and third-party preservation, malformed Mount/version/symlink rejection\n");return 0;
 }
 }
+
