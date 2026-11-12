@@ -23,6 +23,8 @@ struct Inspection {
 
 QString sha1File(const QString &path, QString *error = nullptr);
 QString detectResourceVersion(const QString &gameRoot);
+QString translationMount(const QString &gameRoot, const QString &resourceVersion);
+QString translationMountForInstall(const QString &gameRoot, const QString &resourceVersion, const QString &appDataPath);
 QString englishMountPreflight(const QString &gameRoot, const QString &resourceVersion);
 bool safeGameRoot(const QString &root, QString *error = nullptr);
 struct GameProcess {
