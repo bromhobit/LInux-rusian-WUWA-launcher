@@ -1,34 +1,35 @@
 # Maintainer: ECHO Native
 pkgname=echo-native
 pkgver=0.2.3.1
-pkgrel=1
+pkgrel=2
 pkgdesc='Graphical Linux launcher for Wuthering Waves Russian localization'
 arch=('x86_64')
 url='https://github.com/bromhobit/LInux-rusian-WUWA-launcher'
 license=('custom')
 depends=('glibc>=2.34' 'gcc-libs>=5.1' 'qt6-base>=6.12' 'sdl3>=3.2.0' 'xxhash>=0.8.4')
-makedepends=('cmake' 'pkgconf' 'gcc' 'make' 'python' 'binutils')
-source=("echo-native-source-${pkgver}.tar.gz")
-sha256sums=('08cd6973807db4d8af9b4f23b9c59dc8b2ff16c11cfc7f941e2465d3098355bc')
+makedepends=('gcc' 'pkgconf')
+source=('echo-native-source-0.2.3.1-2.tar.gz')
+sha256sums=('ce3532998d8e72dcd5ad640b2b5f8c681e0cf515df0569265213d660de1e6d8d')
 
 build() {
-  # CachyOS may set -march=native to AVX-512 on the build host.
-  # A distribution package must not inherit the host ISA.
-  export CFLAGS='-O2 -pipe -march=x86-64 -mtune=generic -fexceptions -fno-plt'
-  export CXXFLAGS="$CFLAGS -Wp,-D_GLIBCXX_ASSERTIONS"
-  cmake -S "$srcdir/native" -B "$srcdir/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
-  cmake --build "$srcdir/build" -j3
+  cd "$srcdir"
+  g++ -std=c++17 $CXXFLAGS -fPIC -Wall -Wextra -Wpedantic \
+    -DECHO_SOURCE_DIR='"/usr/share/echo-native"' \
+    $(pkg-config --cflags Qt6Widgets Qt6Network sdl3) \
+    native/src/main.cpp native/src/auto_install.cpp native/src/controller.cpp \
+    $(pkg-config --libs Qt6Widgets Qt6Network sdl3) -lxxhash \
+    -o echo-native
 }
+
 check() {
-  QT_QPA_PLATFORM=offscreen "$srcdir/build/echo-native" --smoke-test
-  QT_QPA_PLATFORM=offscreen "$srcdir/build/echo-native" --ui-test
-  QT_QPA_PLATFORM=offscreen "$srcdir/build/echo-native" --controller-test
+  QT_QPA_PLATFORM=offscreen "$srcdir/echo-native" --smoke-test
+  QT_QPA_PLATFORM=offscreen "$srcdir/echo-native" --ui-test
+  QT_QPA_PLATFORM=offscreen "$srcdir/echo-native" --controller-test
 }
+
 package() {
-  DESTDIR="$pkgdir" cmake --install "$srcdir/build"
-  python "$srcdir/packaging/normalize-elf-isa.py" "$pkgdir/usr/bin/echo-native"
+  install -Dm755 "$srcdir/echo-native" "$pkgdir/usr/bin/echo-native"
   install -Dm644 "$srcdir/packaging/echo-native.desktop" "$pkgdir/usr/share/applications/echo-native.desktop"
   install -Dm644 "$srcdir/packaging/echo-native.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/echo-native.svg"
   install -Dm644 "$srcdir/packaging/LICENSE-PACKAGING" "$pkgdir/usr/share/licenses/echo-native/LICENSE"
 }
-
