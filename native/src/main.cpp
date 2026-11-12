@@ -48,6 +48,8 @@
 #include <xxhash.h>
 #include <algorithm>
 #include <functional>
+#include <unistd.h>
+#include <vector>
 #include "auto_install.h"
 #include "controller.h"
 
@@ -306,7 +308,43 @@ QStringList libraries(const QStringList &roots) {
 }
 
 constexpr const char *WutheringAppId = "3513350";
-struct SteamGame { QString manifest; QString gameDir; };
+struct SteamGame { QString manifest; QString installDir; QString gameDir; QString discoveryError; };
+
+// Steam owns the outer launcher directory; the actual client may be there or
+// in a subdirectory created by Kuro's launcher. Only use paths with both a
+// launcher and versioned resource tables, and never follow nested symlinks.
+SteamGame resolveSteamGame(const QString &manifest, const QString &installDir) {
+    struct Candidate { QString path; bool hasClient{}; };
+    QList<Candidate> candidates;
+    QStringList level{installDir};
+    for (int depth=0; depth<=2 && !level.isEmpty(); ++depth) {
+        QStringList next;
+        for (const auto &path : level) {
+            const bool launcher = QFileInfo(path+"/Wuthering Waves.exe").isFile() ||
+                                  QFileInfo(path+"/launcher.exe").isFile();
+            if (launcher && !EchoInstall::detectResourceVersion(path).isEmpty()) {
+                candidates.append({path, QFileInfo(path+"/Client/Binaries/Win64/Client-Win64-Shipping.exe").isFile()});
+            }
+            if (depth==2) continue;
+            const QDir dir(path);
+            for (const auto &name : dir.entryList(QDir::Dirs|QDir::NoDotAndDotDot|QDir::NoSymLinks)) {
+                // These trees are not installation roots and can be enormous.
+                if (name=="Client" || name=="Engine" || name=="kr_game_cache") continue;
+                next.append(dir.filePath(name));
+            }
+        }
+        level=next;
+    }
+    QList<Candidate> withClient;
+    for (const auto &candidate : candidates)
+        if (candidate.hasClient) withClient.append(candidate);
+    const auto &usable = withClient.isEmpty()?candidates:withClient;
+    if (usable.size()==1)
+        return {manifest, installDir, QFileInfo(usable.first().path).canonicalFilePath(), {}};
+    if (usable.isEmpty())
+        return {manifest, installDir, {}, "Игра в Steam найдена, но готовые файлы клиента и ресурсы ещё не обнаружены."};
+    return {manifest, installDir, {}, "В папке Steam найдены несколько клиентов с ресурсами. Автоматический выбор остановлен."};
+}
 
 QString manifestValue(const QString &contents, const QString &key) {
     const QRegularExpression re("\\\"" + QRegularExpression::escape(key) + "\\\"\\s+\\\"([^\\\"]+)\\\"");
@@ -316,6 +354,7 @@ QString manifestValue(const QString &contents, const QString &key) {
 
 QList<SteamGame> discoverWutheringInstallations(const QStringList &roots) {
     QList<SteamGame> found;
+    QStringList seenManifests;
     for (const auto &library : libraries(roots)) {
         const QString manifest = library + "/steamapps/appmanifest_" + WutheringAppId + ".acf";
         QFile file(manifest);
@@ -325,12 +364,97 @@ QList<SteamGame> discoverWutheringInstallations(const QStringList &roots) {
         const QString installDir = manifestValue(contents, "installdir");
         if (installDir.isEmpty() || installDir == "." || installDir == ".." || installDir.contains('/') || installDir.contains('\\')) continue;
         const QString gameDir = QDir(library + "/steamapps/common").filePath(installDir);
-        if (!QFileInfo(gameDir).isDir() ||
-            !(QFileInfo(gameDir + "/launcher.exe").isFile() ||
-              QFileInfo(gameDir + "/Wuthering Waves.exe").isFile())) continue;
-        found << SteamGame{QFileInfo(manifest).canonicalFilePath(), QFileInfo(gameDir).canonicalFilePath()};
+        const QString canonicalInstall=QFileInfo(gameDir).canonicalFilePath();
+        const QString canonicalManifest=QFileInfo(manifest).canonicalFilePath();
+        if (canonicalInstall.isEmpty() || canonicalManifest.isEmpty() || seenManifests.contains(canonicalManifest)) continue;
+        seenManifests << canonicalManifest;
+        found << resolveSteamGame(canonicalManifest, canonicalInstall);
     }
     return found;
+}
+
+// Optional Steam launch wrapper. The ordinary Steam launch remains available
+// for updates. Only redirect when the launcher, client and quality pack are
+// unambiguous; keep all existing Proton and per-game wrapper arguments.
+bool directSteamArguments(const QStringList &input,const QList<SteamGame> &games,
+                          QStringList *output,QString *reason) {
+    *output=input;
+    if(qEnvironmentVariable("ECHO_OFFICIAL_LAUNCHER")=="1"){
+        *reason="official launcher requested";return false;
+    }
+    const QString appId=qEnvironmentVariable("SteamAppId");
+    if((!appId.isEmpty()&&appId!=WutheringAppId)||games.size()!=1||games.first().gameDir.isEmpty()){
+        *reason="Steam game or client is ambiguous";return false;
+    }
+    const auto &game=games.first();
+    const QString launcher=QFileInfo(game.installDir+"/launcher.exe").canonicalFilePath();
+    if(launcher.isEmpty()){*reason="Steam launcher not found";return false;}
+    int index=-1;
+    for(int i=1;i<input.size();++i) {
+        if(QFileInfo(input.at(i)).canonicalFilePath()==launcher) {
+            if(index>=0){*reason="multiple launcher arguments";return false;}
+            index=i;
+        }
+    }
+    if(index<0){*reason="launcher not present in Steam command";return false;}
+    const QFileInfo shipping(game.gameDir+"/Client/Binaries/Win64/Client-Win64-Shipping.exe");
+    const QString executable=shipping.canonicalFilePath();
+    if(!shipping.isFile()||shipping.isSymLink()||executable.isEmpty()||
+       !executable.startsWith(game.gameDir+"/Client/")){
+        *reason="game executable not found";return false;
+    }
+    const QString resourceVersion=EchoInstall::detectResourceVersion(game.gameDir);
+    QFile config(game.gameDir+"/launcherDownloadConfig.json");
+    if(resourceVersion.isEmpty()||!config.open(QIODevice::ReadOnly)){
+        *reason="installed resource version unavailable";return false;
+    }
+    const auto bundles=QJsonDocument::fromJson(config.readAll()).object().value("bundles").toObject();
+    QStringList qualities;
+    for(auto it=bundles.constBegin();it!=bundles.constEnd();++it){
+        const QString key=it.key().toLower();
+        if((key=="sd"||key=="hd"||key=="uhd")&&
+           it.value().toObject().value("version").toString()==resourceVersion)
+            qualities<<key;
+    }
+    if(qualities.size()!=1){*reason="installed quality pack is ambiguous";return false;}
+    const QString qualityArg="-krqlv="+qualities.first();
+    bool provided=false;
+    for(const auto &arg:input) {
+        if(arg.startsWith("-krqlv=",Qt::CaseInsensitive)){
+            if(arg.compare(qualityArg,Qt::CaseInsensitive)!=0){
+                *reason="requested quality differs from the installed pack";return false;
+            }
+            provided=true;
+        }
+    }
+    (*output)[index]=executable;
+    if(!provided)output->append(qualityArg);
+    *reason="direct game; quality "+qualities.first();
+    return true;
+}
+
+int runSteamWrapper(int argc,char **argv) {
+    QStringList command;
+    for(int i=2;i<argc;++i)command<<QFile::decodeName(argv[i]);
+    if(command.isEmpty()){fprintf(stderr,"ECHO: Steam command is empty.\n");return 2;}
+    QStringList next;QString reason;
+    directSteamArguments(command,discoverWutheringInstallations(steamRoots()),&next,&reason);
+    fprintf(stderr,"ECHO Steam: %s\n",qPrintable(reason));
+    std::vector<QByteArray> storage;
+    storage.reserve(static_cast<size_t>(next.size()));
+    for(qsizetype i=0;i<next.size();++i){
+        if(i<command.size()&&next.at(i)==command.at(i))
+            storage.emplace_back(argv[i+2]); // Preserve original non-UTF-8 bytes.
+        else
+            storage.emplace_back(QFile::encodeName(next.at(i)));
+    }
+    std::vector<char*> args;
+    args.reserve(storage.size()+1);
+    for(auto &arg:storage)args.push_back(arg.data());
+    args.push_back(nullptr);
+    ::execvp(args[0],args.data());
+    perror("ECHO: unable to start Steam command");
+    return 127;
 }
 
 bool isShippingExecutable(const QString &path) {
@@ -578,8 +702,6 @@ public:
         compatEdit->setToolTip(compatEdit->text());
         for(auto *button:cardGroup->buttons())button->setChecked(button->property("channelId").toString()==channelBox->currentData().toString());
         const auto detectedGames = discoverWutheringInstallations(steamRoots());
-        if (gameEdit->text().isEmpty() && !detectedGames.isEmpty())
-            gameEdit->setText(guessGameExe(detectedGames.first().gameDir));
         if (settings.value("launchMode").isValid()) launchMode->setCurrentIndex(launchMode->findData(settings.value("launchMode").toString()));
         else launchMode->setCurrentIndex(detectedGames.isEmpty() ? 1 : 0);
         refreshStatus(); updatePreview(); refreshDiagnostics();
@@ -762,13 +884,13 @@ private:
         return {};
     }
     QString gameResourceVersion(const QString &gameRoot)const {
-        return EchoInstall::detectResourceVersion(gameRoot);
+        return gameRoot.isEmpty()?QString():EchoInstall::detectResourceVersion(gameRoot);
     }
     static QString normalizedVersion(QString version){while(version.endsWith(".0"))version.chop(2);return version;}
     EchoInstall::Inspection selectedInstallState() const {
         const auto games=discoverWutheringInstallations(steamRoots());
         const QString id=channelBox->currentData().toString();const auto it=manifests.constFind(id);
-        if(games.size()!=1)return {};
+        if(games.size()!=1||games.first().gameDir.isEmpty())return {};
         return EchoInstall::inspect(appDataPath,games.first().gameDir,gameResourceVersion(games.first().gameDir),id,it==manifests.cend()?QString():it->textHash);
     }
     void verifyInstalledFiles(){
@@ -778,7 +900,7 @@ private:
     void repairInstalledMount(){
         const auto games=discoverWutheringInstallations(steamRoots());if(games.size()!=1){channelStatus->setText("Восстановление доступно только при одной обнаруженной Steam-установке.");return;}
         const auto state=selectedInstallState();if(!state.repairable){channelStatus->setText(state.message);refreshAutoInstallControls();return;}
-        const QString prompt=QString("SHA-1 установленного текстового PAK совпадает с журналом ECHO.\n\nБудет добавлена только принадлежащая ECHO строка в MountLang_en.txt версии %1. Остальные строки будут сохранены, перед записью создаётся резервная копия. Продолжить?").arg(state.installedResourceVersion);
+        const QString prompt=QString("SHA-1 установленного текстового PAK совпадает с журналом ECHO.\n\nБудет восстановлена только принадлежащая ECHO запись в таблице ресурсов версии %1. Продолжить?").arg(state.installedResourceVersion);
         if(QMessageBox::question(this,"Восстановить запись перевода",prompt,QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
         const auto result=EchoInstall::repair(appDataPath,state.currentResourceVersion);channelStatus->setText(result.message);refreshAutoInstallControls();
     }
@@ -793,20 +915,22 @@ private:
         if(gameDot)
             gameDot->setStyleSheet(games.isEmpty()?"color: #d17474;":(state.owned&&!state.healthy?"color: #d2a25f;":"color: #83b89b;"));
         QString primary="Установить перевод";
-        if(state.healthy){if(state.selectedChannelDiffers)primary="Сменить перевод";else if(state.packageDiffers)primary="Обновить перевод";else primary="Перевод установлен";}
-        else if(state.owned&&state.resourceVersionChanged)primary="Установить для новой версии";
+        if(state.owned&&state.resourceVersionChanged)primary="Установить для новой версии";
+        else if(state.healthy){if(state.selectedChannelDiffers)primary="Сменить перевод";else if(state.packageDiffers)primary="Обновить перевод";else primary="Перевод установлен";}
         else if(state.repairable)primary="Восстановить перевод";
         else if(state.reinstallable)primary="Установить перевод повторно";
         else if(state.owned&&!state.healthy)primary="Файлы требуют проверки";
         autoInstallBtn->setText(primary);
-        autoInstallBtn->setVisible(!(state.healthy&&!state.selectedChannelDiffers&&!state.packageDiffers));
-        autoInstallBtn->setEnabled(!busyNetwork&&games.size()==1&&(state.repairable||state.reinstallable||!state.owned||(state.healthy&&(state.selectedChannelDiffers||state.packageDiffers)))&&!(state.owned&&state.resourceVersionChanged));
+        autoInstallBtn->setVisible(!(state.healthy&&!state.resourceVersionChanged&&!state.selectedChannelDiffers&&!state.packageDiffers));
+        autoInstallBtn->setEnabled(!busyNetwork&&games.size()==1&&(state.resourceVersionChanged||state.repairable||state.reinstallable||!state.owned||(state.healthy&&(state.selectedChannelDiffers||state.packageDiffers))));
         QString reason;
         stopBackgroundBtn->hide();
         if(games.size()>1)
             reason="Найдено несколько установок Wuthering Waves.";
         else if(games.isEmpty())
             reason="Не обнаружена Steam-установка Wuthering Waves.";
+        else if(games.first().gameDir.isEmpty())
+            reason=games.first().discoveryError;
         else {
             const auto processes=EchoInstall::blockingProcesses(games.first().gameDir);
             if(!processes.isEmpty()){
@@ -829,7 +953,7 @@ private:
             }
         }
         if(busyNetwork)reason="Выполняется сетевой запрос; дождитесь завершения или нажмите «Отменить».";
-        if(games.size()==1){const QString gameRoot=games.first().gameDir;const QString rv=gameResourceVersion(gameRoot);statusLabel->setText("Wuthering Waves · "+rv+" · "+(state.owned?state.message:"Steam игра обнаружена"));}
+        if(games.size()==1){const QString gameRoot=games.first().gameDir;const QString rv=gameResourceVersion(gameRoot);statusLabel->setText(gameRoot.isEmpty()?games.first().discoveryError:"Wuthering Waves · "+rv+" · "+(state.owned?state.message:"Steam игра обнаружена"));}
         else statusLabel->setText(games.isEmpty()?"Wuthering Waves не найдена в библиотеках Steam.":"Найдено несколько установок Wuthering Waves.");
         if(!reason.isEmpty())autoInstallBtn->setEnabled(false);
         installAvailability->setVisible(!reason.isEmpty());
@@ -839,6 +963,7 @@ private:
     void beginAutoInstall(){
         auto clearPending=[this](){pendingAutoInstall=false;pendingInstallChannel.clear();pendingInstallGame.clear();pendingInstallResourceVersion.clear();pendingInstallTranslationVersion.clear();channelBox->setEnabled(true);};
         const auto games=discoverWutheringInstallations(steamRoots());if(games.size()!=1){clearPending();channelStatus->setText(games.isEmpty()?"Установка недоступна: не найден Steam manifest AppID 3513350.":"Установка заблокирована: найдено несколько игровых установок Steam.");return;}
+        if(games.first().gameDir.isEmpty()){clearPending();channelStatus->setText(games.first().discoveryError);return;}
         if(EchoInstall::gameRunning(games.first().gameDir)){
             clearPending();
             const QString why="Wuthering Waves продолжает выполнять фоновые процессы. Причина показана под кнопкой установки. Если остался только зависший обновлятор, завершите его отдельной кнопкой после проверки.";
@@ -858,14 +983,14 @@ private:
         pendingInstallChannel=id;pendingInstallGame=games.first().gameDir;pendingInstallResourceVersion=version;pendingInstallTranslationVersion=m.version;
         const QString resource=games.first().gameDir+"/Client/Saved/Resources/"+version;
         const QString pak=resource+"/Lang_en/RU/pakchunk0-WindowsNoEditor_10100_P.pak";
-        const QString mount=resource+"/Mount/MountLang_en.txt";
+        const QString mount=resource+"/Mount/"+EchoInstall::translationMountForInstall(games.first().gameDir,version,appDataPath);
         const QString prompt=QString("Канал: %1 v%2\nИгра: %3\n\nPAK будет установлен в:\n%4\n\nMount будет обновлён:\n%5\n\nФайл будет загружен при необходимости и проверен XXH64. В Mount добавится экспериментальная запись с приоритетом 10100. Игра должна быть закрыта. Продолжить?").arg(channelBox->currentText(),m.version,games.first().gameDir,pak,mount);
         if(QMessageBox::question(this,"Подтвердите установку перевода",prompt,QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes){clearPending();channelStatus->setText("Установка отменена. Файлы игры не изменены.");return;}
         pendingAutoInstall=true;channelBox->setEnabled(false);downloadSelectedPackage();
     }
     void installCachedTranslation(){
         pendingAutoInstall=false;const auto games=discoverWutheringInstallations(steamRoots());const QString id=pendingInstallChannel;const QString expectedGame=pendingInstallGame,expectedResource=pendingInstallResourceVersion,expectedTranslation=pendingInstallTranslationVersion;
-        if(games.size()!=1||!manifests.contains(id)||games.first().gameDir!=expectedGame){channelBox->setEnabled(true);channelStatus->setText("Установка остановлена: Steam install или манифест изменились.");return;}
+        if(games.size()!=1||games.first().gameDir.isEmpty()||!manifests.contains(id)||games.first().gameDir!=expectedGame){channelBox->setEnabled(true);channelStatus->setText("Установка остановлена: Steam install или манифест изменились.");return;}
         const auto m=manifests.value(id);const QString version=gameResourceVersion(games.first().gameDir);const QString root=games.first().gameDir+"/Client/Saved/Resources/"+version;
         const QString mountProblem=EchoInstall::englishMountPreflight(games.first().gameDir,version);
         if(!mountProblem.isEmpty()){channelBox->setEnabled(true);channelStatus->setText(mountProblem);refreshAutoInstallControls();return;}
@@ -878,7 +1003,7 @@ private:
     void removeTranslation(){
         const auto games=discoverWutheringInstallations(steamRoots());if(games.size()!=1){channelStatus->setText("Удаление заблокировано: требуется ровно одна найденная установка Steam.");return;}
         if(EchoInstall::gameRunning(games.first().gameDir)){channelStatus->setText("Закройте Wuthering Waves и повторите удаление.");return;}
-        const auto answer=QMessageBox::question(this,"Удалить перевод?","Будет удалён только проверенный PAK ECHO и его собственная строка в MountLang_en.txt. Остальные строки сохраняются; перед изменением создаётся резервная копия.",QMessageBox::Yes|QMessageBox::No,QMessageBox::No);
+        const auto answer=QMessageBox::question(this,"Удалить перевод?","Будет удалён только проверенный PAK ECHO и его собственная строка в таблице ресурсов. Остальные строки сохраняются; перед изменением создаётся резервная копия.",QMessageBox::Yes|QMessageBox::No,QMessageBox::No);
         if(answer!=QMessageBox::Yes)return;
         const auto result=EchoInstall::uninstall(appDataPath);channelStatus->setText(result.message);if(result.ok)versionStatus->setText("Перевод удалён");refreshAutoInstallControls();refreshDiagnostics();
     }
@@ -924,7 +1049,16 @@ private:
     void loadSettings(){gameEdit->setText(settings.value("gamePath").toString());compatEdit->setText(settings.value("compatPath",defaultCompat()).toString());pakEdit->setText(settings.value("localizer/pak").toString());sigEdit->setText(settings.value("localizer/sig").toString());targetEdit->setText(settings.value("localizer/target").toString());}
     void saveSettings(){settings.setValue("gamePath",gameEdit->text());settings.setValue("compatPath",compatEdit->text());settings.setValue("proton",protonPath());settings.setValue("launchMode",launchMode->currentData());settings.sync();}
     void saveInstallSettings(){settings.setValue("localizer/pak",pakEdit->text());settings.setValue("localizer/sig",sigEdit->text());settings.setValue("localizer/target",targetEdit->text());settings.sync();}
-    void refreshStatus(){const QFileInfo game(gameEdit->text()),proton(protonPath());const bool steamMode=launchMode->currentData().toString()=="steam";
+    void refreshStatus(){const bool steamMode=launchMode->currentData().toString()=="steam";
+        if(steamMode){
+            const auto games=discoverWutheringInstallations(steamRoots());
+            if(games.size()==1){
+                const QString root=games.first().gameDir.isEmpty()?games.first().installDir:games.first().gameDir;
+                const QString exe=guessGameExe(root);
+                if(!exe.isEmpty()&&gameEdit->text()!=exe)gameEdit->setText(exe);
+            }
+        }
+        const QFileInfo game(gameEdit->text()),proton(protonPath());
         launchBtn->setText(steamMode?"Играть через Steam":"Играть через Proton");
         launchBtn->setToolTip(steamMode?"Запуск Wuthering Waves через Steam (AppID 3513350)":"Запуск выбранного launcher.exe через Proton; параметры на странице «Настройки».");
         QStringList problems;if(steamMode){if(discoverWutheringInstallations(steamRoots()).isEmpty())problems<<"не найден Steam manifest 3513350 и установленная игра";if(steamExecutable().isEmpty())problems<<"не найден исполняемый файл Steam";}else{if(!game.exists()||!game.isFile()||game.suffix().compare("exe",Qt::CaseInsensitive)!=0)problems<<"выберите существующий .exe игры";if(isShippingExecutable(gameEdit->text()))problems<<"Client-Win64-Shipping.exe запускать напрямую нельзя";else if(!isSupportedStandaloneLauncher(gameEdit->text()))problems<<"для отдельного режима выберите launcher.exe";if(!proton.isExecutable())problems<<"выберите исполняемый скрипт Proton";if(compatEdit->text().trimmed().isEmpty())problems<<"укажите каталог compatdata";}const auto roots=steamRoots();const QString resourceVersion=installedResourceVersion();const QString ready=(steamMode?QString("Игра в Steam обнаружена · AppID 3513350"):QString("Отдельный запуск launcher.exe · совместимость не гарантируется"))+" · ресурсы "+(resourceVersion.isEmpty()?QString("версия не найдена"):QString("v"+resourceVersion));statusLabel->setText(problems.isEmpty()?ready:"Требуется настройка: "+problems.join("; "));launchBtn->setEnabled(problems.isEmpty()&&(!process||process->state()==QProcess::NotRunning));protonBox->setEnabled(!steamMode);compatEdit->setEnabled(!steamMode);}
@@ -976,7 +1110,7 @@ private:
                     }
                 }
             }
-            logLine("\n=== "+QDateTime::currentDateTime().toString(Qt::ISODate)+" ===");logLine("Launch mode: Steam-managed");logLine("Steam: "+steam);logLine("AppID: 3513350");logLine("Install: "+installs.first().gameDir);
+            logLine("\n=== "+QDateTime::currentDateTime().toString(Qt::ISODate)+" ===");logLine("Launch mode: Steam-managed");logLine("Steam: "+steam);logLine("AppID: 3513350");logLine("Install: "+installs.first().installDir);logLine("Client: "+installs.first().gameDir);
             QString error;
             if(!QProcess::startDetached(steam,steamLaunchArguments(),QString(),nullptr)){error="Не удалось передать запуск Steam. Убедитесь, что клиент Steam запущен.";logLine(error);QMessageBox::critical(this,"Ошибка запуска",error);return;}
             statusLabel->setText("Команда запуска передана Steam (AppID 3513350). Steam управляет Proton и compatdata.");logLine("Steam launch request submitted.");saveSettings();refreshDiagnostics();return;
@@ -1113,8 +1247,12 @@ int runLaunchTests() {
     QTemporaryDir temp;
     if (!temp.isValid()) { fprintf(stderr,"FAIL: launch test temporary directory unavailable\n"); return 1; }
     const QString root=temp.path(), library=root+"/library", apps=library+"/steamapps", game=apps+"/common/Wuthering Waves";
-    QDir().mkpath(game);
-    if (!writeBytes(apps+"/appmanifest_3513350.acf", "\"AppState\" { \"appid\" \"3513350\" \"installdir\" \"Wuthering Waves\" }\n") || !writeBytes(game+"/launcher.exe","launcher")) { fprintf(stderr,"FAIL: Steam manifest fixture setup failed\n"); return 1; }
+    const QString oldMount=game+"/Client/Saved/Resources/3.7.0/Mount";
+    if(!QDir().mkpath(oldMount))return 1;
+    if (!writeBytes(apps+"/appmanifest_3513350.acf", "\"AppState\" { \"appid\" \"3513350\" \"installdir\" \"Wuthering Waves\" }\n") ||
+        !writeBytes(game+"/launcher.exe","launcher") || !writeBytes(oldMount+"/MountResource.txt","::Mount::\n::Del::\n")) {
+        fprintf(stderr,"FAIL: Steam manifest fixture setup failed\n"); return 1;
+    }
     const auto detected=discoverWutheringInstallations({library});
     if (detected.size()!=1 || detected.first().gameDir!=QFileInfo(game).canonicalFilePath()) { fprintf(stderr,"FAIL: Steam appmanifest discovery failed\n"); return 1; }
     // Steam release may ship Wuthering Waves.exe without launcher.exe.
@@ -1124,6 +1262,45 @@ int runLaunchTests() {
         fprintf(stderr,"FAIL: official Steam EXE layout not detected\n"); return 1;
     }
     if (!writeBytes(game+"/launcher.exe","launcher")) return 1;
+    // Version 3.8 can leave stale resources in the Steam launcher directory.
+    const QString nested=game+"/Wuthering Waves Game", nestedMount=nested+"/Client/Saved/Resources/3.8.0/Mount";
+    const QString nestedExe=nested+"/Client/Binaries/Win64/Client-Win64-Shipping.exe";
+    if(!QDir().mkpath(nestedMount)||!QDir().mkpath(QFileInfo(nestedExe).absolutePath())||
+       !writeBytes(nested+"/Wuthering Waves.exe","client")||!writeBytes(nestedExe,"client")||
+       !writeBytes(nestedMount+"/MountResource.txt","::Mount::\n::Del::\n"))return 1;
+    const auto resolved=discoverWutheringInstallations({library,library});
+    if(resolved.size()!=1||resolved.first().installDir!=QFileInfo(game).canonicalFilePath()||
+       resolved.first().gameDir!=QFileInfo(nested).canonicalFilePath()||
+       EchoInstall::detectResourceVersion(resolved.first().gameDir)!="3.8.0"){
+        fprintf(stderr,"FAIL: nested client not selected over stale launcher resources\n");return 1;
+    }
+    if(!writeBytes(nested+"/launcherDownloadConfig.json",
+       "{\"bundles\":{\"HD\":{\"version\":\"3.8.0\",\"resourcePacks\":[\"common\",\"hd\"]}}}"))return 1;
+    const QStringList steamCommand{"/fake/proton","waitforexitandrun",game+"/launcher.exe","-SkipSplash"};
+    QStringList redirected;QString why;
+    if(!directSteamArguments(steamCommand,resolved,&redirected,&why)||
+       redirected!=QStringList({"/fake/proton","waitforexitandrun",nestedExe,"-SkipSplash","-krqlv=hd"})){
+        fprintf(stderr,"FAIL: Steam direct command or quality selection: %s\n",qPrintable(why));return 1;
+    }
+    QStringList conflicting=steamCommand;conflicting<<"-krqlv=uhd";
+    if(directSteamArguments(conflicting,resolved,&redirected,&why)||redirected!=conflicting){
+        fprintf(stderr,"FAIL: conflicting quality must fall back to the official launcher\n");return 1;
+    }
+    if(!writeBytes(nested+"/launcherDownloadConfig.json",
+       "{\"bundles\":{\"HD\":{\"version\":\"3.8.0\"},\"UHD\":{\"version\":\"3.8.0\"}}}")||
+       directSteamArguments(steamCommand,resolved,&redirected,&why)||redirected!=steamCommand){
+        fprintf(stderr,"FAIL: ambiguous quality must fall back to the official launcher\n");return 1;
+    }
+    const QString competing=game+"/Other copy", competingMount=competing+"/Client/Saved/Resources/3.8.0/Mount";
+    const QString competingExe=competing+"/Client/Binaries/Win64/Client-Win64-Shipping.exe";
+    if(!QDir().mkpath(competingMount)||!QDir().mkpath(QFileInfo(competingExe).absolutePath())||
+       !writeBytes(competing+"/Wuthering Waves.exe","client")||!writeBytes(competingExe,"client")||
+       !writeBytes(competingMount+"/MountResource.txt","::Mount::\n::Del::\n"))return 1;
+    const auto ambiguous=discoverWutheringInstallations({library});
+    if(ambiguous.size()!=1||!ambiguous.first().gameDir.isEmpty()||ambiguous.first().discoveryError.isEmpty()){
+        fprintf(stderr,"FAIL: ambiguous clients must not be selected for modification\n");return 1;
+    }
+    if(!QDir(competing).removeRecursively())return 1;
     const QString shipping=game+"/Client-Win64-Shipping.exe", proton=root+"/proton", compat=root+"/compatdata";
     if (!writeBytes(shipping,"shipping") || !writeBytes(proton,"#!/bin/sh\nexit 0\n") || !QFile::setPermissions(proton,QFileDevice::ReadOwner|QFileDevice::WriteOwner|QFileDevice::ExeOwner)) { fprintf(stderr,"FAIL: launch fixture setup failed\n"); return 1; }
     QProcess process; QString error;
@@ -1131,12 +1308,13 @@ int runLaunchTests() {
     if (!isSupportedStandaloneLauncher(game+"/launcher.exe") || isSupportedStandaloneLauncher(shipping)) { fprintf(stderr,"FAIL: standalone launcher validation failed\n"); return 1; }
     if (steamLaunchArguments()!=QStringList({"-applaunch","3513350"})) { fprintf(stderr,"FAIL: Steam launch arguments mismatch\n"); return 1; }
     if (!launchStandaloneProton(&process,proton,game+"/launcher.exe",compat,library,&error) || process.program()!=proton || process.arguments()!=QStringList({"run",game+"/launcher.exe"}) || process.state()!=QProcess::NotRunning) { fprintf(stderr,"FAIL: standalone command preparation failed\n"); return 1; }
-    fprintf(stdout,"PASS: Steam manifest discovery, AppID launch arguments, shipping EXE refusal, launcher-only standalone preparation; no game process started\n");
+    fprintf(stdout,"PASS: Steam discovery, nested client, stale resources, ambiguous clients, direct Proton command and quality fallback; no game process started\n");
     return 0;
 }
 }
 
 int main(int argc,char **argv){
+    if(argc>1&&QByteArray(argv[1])=="--steam-wrap")return runSteamWrapper(argc,argv);
     const bool smoke=argc>1&&QString::fromLocal8Bit(argv[1])=="--smoke-test";
     const bool resourceCheck=argc>1&&QString::fromLocal8Bit(argv[1])=="--resource-check";
     const bool installerTest=argc>1&&QString::fromLocal8Bit(argv[1])=="--installer-test";
@@ -1220,10 +1398,12 @@ int main(int argc,char **argv){
     if(resourceCheck){
         const auto games=discoverWutheringInstallations(steamRoots());
         if(games.size()!=1){fprintf(stderr,"ERROR: Steam installations found: %lld\n",static_cast<long long>(games.size()));return 2;}
+        if(games.first().gameDir.isEmpty()){fprintf(stderr,"ERROR: %s\n",qPrintable(games.first().discoveryError));return 2;}
         const QString version=EchoInstall::detectResourceVersion(games.first().gameDir);
         const QString warning=EchoInstall::englishMountPreflight(games.first().gameDir,version);
-        fprintf(stdout,"RESOURCE_VERSION=%s\nENGLISH_MOUNT=%s\n",
-                qPrintable(version),warning.isEmpty()?"ready":qPrintable(warning));
+        const QString mount=EchoInstall::translationMount(games.first().gameDir,version);
+        fprintf(stdout,"STEAM_INSTALL=%s\nGAME_CLIENT=%s\nRESOURCE_VERSION=%s\nTRANSLATION_MOUNT=%s\n",
+                qPrintable(games.first().installDir),qPrintable(games.first().gameDir),qPrintable(version),warning.isEmpty()?qPrintable(mount):qPrintable(warning));
         return version.isEmpty()?1:0;
     }
     if(installerTest)return runInstallerTests();
