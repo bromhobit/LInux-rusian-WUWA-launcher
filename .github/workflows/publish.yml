@@ -79,15 +79,3 @@ jobs:
             ghcr.io/bromhobit/echo-native:${{ steps.package.outputs.version }}-${{ steps.package.outputs.revision }}
             ghcr.io/bromhobit/echo-native:latest
 
-      - name: Remove obsolete releases
-        if: steps.package.outputs.version == '0.3.0'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for tag in v0.2.1 v0.2.2 v0.2.3 v0.2.3.1; do
-            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
-            fi
-          done
