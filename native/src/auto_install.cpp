@@ -13,7 +13,10 @@
 #include <QUuid>
 #include <QRegularExpression>
 #include <QProcess>
+#include <QMutex>
+#include <QMutexLocker>
 #include <signal.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <xxhash.h>
 
@@ -122,6 +125,33 @@ bool canReinstallMissingPak(const QJsonObject &j,const QString &root,const QStri
 QString sha1File(const QString &path,QString *error) {
     QFile f(path);if(!f.open(QIODevice::ReadOnly)){if(error)*error=f.errorString();return {};}
     QCryptographicHash h(QCryptographicHash::Sha1);while(!f.atEnd()){QByteArray b=f.read(4*1024*1024);if(b.isEmpty()&&f.error()!=QFile::NoError){if(error)*error=f.errorString();return {};}h.addData(b);}return QString::fromLatin1(h.result().toHex());
+}
+
+namespace {
+// Status refresh runs frequently. Cache only the most recent verified PAK and
+// invalidate on inode, size or nanosecond mtime/ctime changes. Mutating
+// operations still calculate the hash again immediately before writing.
+QString inspectionSha1(const QString &path,QString *error) {
+    struct stat before{};
+    const QByteArray native=QFile::encodeName(path);
+    if(::stat(native.constData(),&before)!=0)return sha1File(path,error);
+    static QMutex mutex;
+    static QString cachedPath,cachedHash;
+    static struct stat cached{};
+    QMutexLocker lock(&mutex);
+    auto same=[](const struct stat &a,const struct stat &b) {
+        return a.st_dev==b.st_dev&&a.st_ino==b.st_ino&&a.st_size==b.st_size&&
+               a.st_mtim.tv_sec==b.st_mtim.tv_sec&&a.st_mtim.tv_nsec==b.st_mtim.tv_nsec&&
+               a.st_ctim.tv_sec==b.st_ctim.tv_sec&&a.st_ctim.tv_nsec==b.st_ctim.tv_nsec;
+    };
+    if(cachedPath==path&&!cachedHash.isEmpty()&&same(before,cached))return cachedHash;
+    const QString hash=sha1File(path,error);
+    struct stat after{};
+    if(!hash.isEmpty()&&::stat(native.constData(),&after)==0&&same(before,after)){
+        cachedPath=path;cachedHash=hash;cached=after;
+    } else {cachedPath.clear();cachedHash.clear();}
+    return hash;
+}
 }
 
 QString detectResourceVersion(const QString &gameRoot) {
@@ -438,7 +468,7 @@ Inspection inspect(const QString &appDataPath,const QString &gameRoot,const QStr
     s.packageDiffers=!selectedXxh64.isEmpty()&&selectedXxh64.compare(j.value("xxh64").toString(),Qt::CaseInsensitive)!=0;
     const QString pak=j.value("pakPath").toString(),mount=recordedRoot+"/Client/Saved/Resources/"+s.installedResourceVersion+"/Mount/"+table;
     const QString expectedPak=recordedRoot+"/Client/Saved/Resources/"+s.installedResourceVersion+"/"+QString::fromLatin1(OwnedRelative)+".pak";
-    QString error;const bool pakOk=pak==expectedPak&&noSymlinkChain(pak)&&QFileInfo(pak).isFile()&&sha1File(pak,&error)==j.value("sha1").toString();
+    QString error;const bool pakOk=pak==expectedPak&&noSymlinkChain(pak)&&QFileInfo(pak).isFile()&&inspectionSha1(pak,&error)==j.value("sha1").toString();
     QByteArray bytes;const bool mountReadable=noSymlinkChain(mount)&&QFileInfo(mount).isFile()&&(bytes=readAll(mount,nullptr)).size()>0;
     const QByteArray entry=j.value("entry").toString().toUtf8();const bool lineOk=mountReadable&&!entry.isEmpty()&&hasExactLine(bytes,entry);
     s.healthy=pakOk&&lineOk;
@@ -534,6 +564,12 @@ int runAutoInstallTests() {
     const QString target=res+"/Lang_en/RU/"+PakName;if(EchoInstall::sha1File(target)!=EchoInstall::sha1File(pak)||!EchoInstall::installedStatus(app,root).startsWith("Установлен: over v3.7")){fprintf(stderr,"FAIL: installed verification\n");return 1;}
     QFile mf(mount);if(!mf.open(QIODevice::ReadOnly))return 1;QByteArray patched=mf.readAll();if(!patched.startsWith("\xEF\xBB\xBF")||!patched.contains("\r\n")||!patched.contains(third)||patched.indexOf("Lang_en/RU/")>patched.indexOf("::Del::"))return 1;
     const auto healthy=inspect(app,root,"3.7.0","over",xxh);if(!healthy.owned||!healthy.healthy||healthy.packageDiffers||healthy.selectedChannelDiffers)return 1;
+    // Refreshing status may reuse a hash only until the actual PAK changes.
+    const QByteArray originalPak(payload,sizeof(payload)-1);
+    if(!put(target,QByteArray(originalPak.size(),'!'))||inspect(app,root,"3.7.0","over",xxh).healthy||
+       !put(target,originalPak)||!inspect(app,root,"3.7.0","over",xxh).healthy){
+        fprintf(stderr,"FAIL: status hash cache did not invalidate after PAK change\n");return 1;
+    }
     const auto changedHash=inspect(app,root,"3.7.0","over","0000000000000000");if(!changedHash.healthy||!changedHash.packageDiffers)return 1;
     const auto changedResources=inspect(app,root,"3.8.0","over",xxh);if(!changedResources.healthy||!changedResources.resourceVersionChanged||changedResources.repairable)return 1;
     QByteArray withoutEcho;if(!transformMount(patched,{},&withoutEcho,true,&err)||!put(mount,withoutEcho))return 1;

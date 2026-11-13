@@ -500,7 +500,7 @@ bool launchStandaloneProton(QProcess *process, const QString &proton, const QStr
     return true;
 }
 
-QList<Proton> discoverProton() {
+[[maybe_unused]] QList<Proton> discoverProton() {
     QList<Proton> out; const auto roots = steamRoots();
     for (const auto &root : roots) {
         QDir compat(root + "/compatibilitytools.d");
@@ -634,19 +634,8 @@ public:
 
         auto *settingsScroll = new QScrollArea; settingsScroll->setWidgetResizable(true); settingsScroll->setFrameShape(QFrame::NoFrame);
         auto *settingsPage = new QWidget; settingsPage->setObjectName("settingsPage"); auto *settingsLayout = new QVBoxLayout(settingsPage); settingsLayout->setContentsMargins(24,18,24,22); settingsLayout->setSpacing(14);
-        auto *settingsHeader = new QHBoxLayout; auto *settingsTitle = new QLabel("Настройки запуска"); settingsTitle->setObjectName("pageTitle"); settingsHeader->addWidget(settingsTitle,1);
+        auto *settingsHeader = new QHBoxLayout; auto *settingsTitle = new QLabel("Настройки и помощь"); settingsTitle->setObjectName("pageTitle"); settingsHeader->addWidget(settingsTitle,1);
         settingsLayout->addLayout(settingsHeader);
-        auto *game = new QFrame; game->setObjectName("surfaceCard");
-        auto *form = new QFormLayout(game);
-        form->setContentsMargins(16,16,16,18);
-        form->setHorizontalSpacing(12);form->setVerticalSpacing(12);
-        form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
-        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
-        launchMode = new QComboBox; launchMode->addItem("Steam · рекомендуется", "steam"); launchMode->addItem("Отдельный запуск через Proton", "standalone"); launchMode->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred); form->addRow("Режим запуска",launchMode);
-        gameEdit = new QLineEdit; gameEdit->setPlaceholderText("Путь к launcher.exe");gameEdit->setMinimumWidth(120); auto *gameRow = browseRow(gameEdit,"Выбрать EXE…",[this]{return QFileDialog::getOpenFileName(this,"Выберите EXE игры",gameEdit->text(),"Windows executable (*.exe)");}); auto *dirBtn = new QPushButton("Каталог…"); auto *gamePathLayout=qobject_cast<QHBoxLayout*>(gameRow->layout()); gamePathLayout->addWidget(dirBtn); form->addRow("Путь к игре",gameRow);
-        protonBox=new QComboBox; protonBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);protonBox->setMinimumWidth(110);protonBox->setSizePolicy(QSizePolicy::Expanding,QSizePolicy::Preferred); auto *manualBtn=new QPushButton("Указать Proton…"); auto *protonRow=new QWidget; auto *protonLayout=new QHBoxLayout(protonRow); protonLayout->setContentsMargins(0,0,0,0); protonLayout->addWidget(protonBox,1); protonLayout->addWidget(manualBtn); form->addRow("Версия Proton",protonRow);
-        compatEdit=new QLineEdit;compatEdit->setMinimumWidth(120); auto *compatRow=browseRow(compatEdit,"Выбрать…",[this]{return QFileDialog::getExistingDirectory(this,"Выберите Compatdata",compatEdit->text());}); form->addRow("Compatdata",compatRow);
-        auto *launchNote = new QLabel("В режиме Steam запуск передаётся штатному приложению для AppID 3513350. Отдельный режим требует launcher.exe и отдельный compatdata. Внутренний Client-Win64-Shipping.exe напрямую не запускается."); launchNote->setObjectName("secondaryText"); launchNote->setWordWrap(true); form->addRow(launchNote); settingsLayout->addWidget(game);
         // Settings sections share the same card/disclosure language as the main page.
         auto *diagnosticsGroup = new QFrame;
         diagnosticsGroup->setObjectName("surfaceCard");
@@ -694,16 +683,8 @@ public:
         connect(localizerNav,&QPushButton::clicked,this,[pages,localizerNav,settingsNav]{pages->setCurrentIndex(0);localizerNav->setChecked(true);settingsNav->setChecked(false);});
         connect(settingsNav,&QPushButton::clicked,this,[pages,localizerNav,settingsNav]{pages->setCurrentIndex(1);settingsNav->setChecked(true);localizerNav->setChecked(false);});
 
-        loadSettings(); refreshProtons(); loadChannelCache();
-        // Long paths remain discoverable even when a narrow window elides them.
-        connect(gameEdit,&QLineEdit::textChanged,gameEdit,&QWidget::setToolTip);
-        connect(compatEdit,&QLineEdit::textChanged,compatEdit,&QWidget::setToolTip);
-        gameEdit->setToolTip(gameEdit->text());
-        compatEdit->setToolTip(compatEdit->text());
+        loadSettings(); loadChannelCache();
         for(auto *button:cardGroup->buttons())button->setChecked(button->property("channelId").toString()==channelBox->currentData().toString());
-        const auto detectedGames = discoverWutheringInstallations(steamRoots());
-        if (settings.value("launchMode").isValid()) launchMode->setCurrentIndex(launchMode->findData(settings.value("launchMode").toString()));
-        else launchMode->setCurrentIndex(detectedGames.isEmpty() ? 1 : 0);
         refreshStatus(); updatePreview(); refreshDiagnostics();
         auto persistInstallInputs=[this]{ saveInstallSettings(); updatePreview(); };
         connect(pakEdit,&QLineEdit::editingFinished,this,persistInstallInputs); connect(sigEdit,&QLineEdit::editingFinished,this,persistInstallInputs); connect(targetEdit,&QLineEdit::editingFinished,this,persistInstallInputs);
@@ -743,24 +724,20 @@ public:
         connect(channelBox,qOverload<int>(&QComboBox::currentIndexChanged),this,[this,cardGroup](int){const QString id=channelBox->currentData().toString();for(auto *button:cardGroup->buttons())button->setChecked(button->property("channelId").toString()==id);});
         connect(cancelRequestBtn,&QPushButton::clicked,this,[this]{if(manifestReply){networkCancelled=true;channelStatus->setText("Запрос отменён пользователем; временный файл будет удалён.");manifestReply->abort();}});
         connect(downloadBtn,&QPushButton::clicked,this,[this]{downloadSelectedPackage();});
-        connect(dirBtn,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getExistingDirectory(this,"Выберите каталог игры",gameEdit->text());if(!p.isEmpty()){const auto exe=guessGameExe(p);gameEdit->setText(exe.isEmpty()?p:exe);saveSettings();refreshStatus();}});
-        connect(manualBtn,&QPushButton::clicked,this,[this]{auto p=QFileDialog::getOpenFileName(this,"Выберите скрипт Proton","","Proton script (proton);;Все файлы (*)");if(!p.isEmpty()){addProton("Вручную — "+QFileInfo(p).fileName(),p);saveSettings();refreshStatus();}});
-        connect(gameEdit,&QLineEdit::editingFinished,this,[this]{saveSettings();refreshStatus();}); connect(compatEdit,&QLineEdit::editingFinished,this,[this]{saveSettings();refreshStatus();}); connect(protonBox,qOverload<int>(&QComboBox::currentIndexChanged),this,[this]{saveSettings();refreshStatus();}); connect(launchMode,qOverload<int>(&QComboBox::currentIndexChanged),this,[this]{saveSettings();refreshStatus();});
-        connect(launchBtn,&QPushButton::clicked,this,[this]{launchGame();}); connect(refreshBtn,&QPushButton::clicked,this,[this]{refreshProtons();refreshStatus();refreshDiagnostics();});
+        connect(launchBtn,&QPushButton::clicked,this,[this]{launchGame();});
+        connect(refreshBtn,&QPushButton::clicked,this,[this]{refreshStatus();refreshDiagnostics();});
         connect(openLogBtn,&QPushButton::clicked,this,[this]{QFile f(logPath);if(f.open(QIODevice::ReadOnly|QIODevice::Text))diagnostic->setPlainText(QString::fromUtf8(f.readAll()));else QMessageBox::information(this,"Лог","Лог запуска пока не создан.");});
-        connect(resetBtn,&QPushButton::clicked,this,[this]{settings.clear();settings.sync();gameEdit->clear();compatEdit->setText(defaultCompat());pakEdit->clear();sigEdit->clear();targetEdit->clear();refreshProtons();saveSettings();saveInstallSettings();refreshStatus();refreshDiagnostics();updatePreview();});
-        // The Proton launcher can exit after the window has already been opened.
-        // Refresh the visible prerequisites without forcing the user to restart ECHO Native.
+        connect(resetBtn,&QPushButton::clicked,this,[this]{settings.clear();settings.sync();pakEdit->clear();sigEdit->clear();targetEdit->clear();saveInstallSettings();refreshStatus();refreshDiagnostics();updatePreview();});
         auto *gameWatch=new QTimer(this);
         connect(gameWatch,&QTimer::timeout,this,[this]{refreshAutoInstallControls();});
         gameWatch->start(3000);
         updateChannelStatus(); refreshAutoInstallControls();
-        if(autoCheck){startupAutoCheck=true;QTimer::singleShot(1500,this,[this]{fetchChannelIndex();});}
+        if(autoCheck){startupAutoCheck=true;QTimer::singleShot(1500,this,[this]{fetchChannelIndex();});auto *updateTimer=new QTimer(this);connect(updateTimer,&QTimer::timeout,this,[this]{if(!busyNetwork)checkSelectedChannel();});updateTimer->start(30*60*1000);}
         if(smoke) smokeChecks();
     }
 private:
-    QSettings settings; QString settingsPath,appDataPath,logPath; QLineEdit *gameEdit{},*compatEdit{},*pakEdit{},*sigEdit{},*targetEdit{}; QComboBox *protonBox{},*launchMode{},*channelBox{}; QLabel *statusLabel{},*gameDot{},*progressLabel{},*channelStatus{},*versionStatus{},*installAvailability{}; QPushButton *launchBtn{},*installBtn{},*refreshChannelsBtn{},*checkVersionBtn{},*cancelRequestBtn{},*downloadBtn{},*autoInstallBtn{},*uninstallBtn{},*verifyBtn{},*repairBtn{},*stopBackgroundBtn{}; QPlainTextEdit *diagnostic{},*preview{}; QProgressBar *progress{}; QWidget *progressWrap{}; QProcess *process{}; QNetworkAccessManager *network{}; QNetworkReply *manifestReply{}; QTimer *requestTimer{}; QFile *downloadFile{}; QString downloadPartPath{},downloadFinalPath{},downloadExpectedHash{},downloadName{},downloadChannel{}; QList<TranslationChannel> channels; QHash<QString,TranslationManifest> manifests; bool busyNetwork{},networkCancelled{},downloadingPackage{},pendingAutoInstall{},startupAutoCheck{}; QString pendingInstallChannel,pendingInstallGame,pendingInstallResourceVersion,pendingInstallTranslationVersion;
-    QString defaultCompat()const{return appDataPath+"/compatdata";} QString protonPath()const{return protonBox->currentData().toString();}
+    QSettings settings; QString settingsPath,appDataPath,logPath; QLineEdit *pakEdit{},*sigEdit{},*targetEdit{}; QComboBox *channelBox{}; QLabel *statusLabel{},*gameDot{},*progressLabel{},*channelStatus{},*versionStatus{},*installAvailability{}; QPushButton *launchBtn{},*installBtn{},*refreshChannelsBtn{},*checkVersionBtn{},*cancelRequestBtn{},*downloadBtn{},*autoInstallBtn{},*uninstallBtn{},*verifyBtn{},*repairBtn{},*stopBackgroundBtn{}; QPlainTextEdit *diagnostic{},*preview{}; QProgressBar *progress{}; QWidget *progressWrap{}; QNetworkAccessManager *network{}; QNetworkReply *manifestReply{}; QTimer *requestTimer{}; QFile *downloadFile{}; QString downloadPartPath{},downloadFinalPath{},downloadExpectedHash{},downloadName{},downloadChannel{}; QList<TranslationChannel> channels; QHash<QString,TranslationManifest> manifests; bool busyNetwork{},networkCancelled{},downloadingPackage{},pendingAutoInstall{},startupAutoCheck{}; QString pendingInstallChannel,pendingInstallGame,pendingInstallResourceVersion,pendingInstallTranslationVersion;
+    QString requestedChannel;
     void setChannels(const QList<TranslationChannel> &items){channels=items;const QString selected=settings.value("localizer/channel","over").toString();channelBox->clear();for(const auto &c:channels)channelBox->addItem(c.name,c.id);int index=channelBox->findData(selected);channelBox->setCurrentIndex(index<0?0:index);updateChannelStatus();}
     void loadChannelCache(){
         QString error; const QByteArray cached=settings.value("localizer/channelIndex").toByteArray();
@@ -778,8 +755,21 @@ private:
         if(!redirect.isEmpty()) error="Сервер перенаправил запрос; перенаправления запрещены для безопасной проверки источника.";
         else if(reply->error()!=QNetworkReply::NoError||code<200||code>=300)error="Ошибка HTTPS запроса ("+QString::number(code)+"): "+reply->errorString();
         else if(purpose=="index") {QList<TranslationChannel> parsed;if(!parseChannelIndex(body,&parsed,&error)){}else{channels=parsed;settings.setValue("localizer/channelIndex",body);settings.sync();setChannels(parsed);channelStatus->setText("Список каналов обновлён с официального GitLab; манифест перевода ещё не проверен.");reply->deleteLater();if(startupAutoCheck){startupAutoCheck=false;QTimer::singleShot(0,this,[this]{checkSelectedChannel();});}return;}}
-        else {const QString id=pendingAutoInstall&&!pendingInstallChannel.isEmpty()?pendingInstallChannel:channelBox->currentData().toString();TranslationManifest manifest;if(!parseTranslationManifest(body,id,&manifest,&error)){}else{manifests.insert(id,manifest);settings.setValue("localizer/manifest/"+id,body);settings.sync();updateChannelStatus();channelStatus->setText("Манифест "+channelBox->currentText()+" получен и проверен. Версия "+manifest.version+".");reply->deleteLater();if(pendingAutoInstall)QTimer::singleShot(0,this,[this]{beginAutoInstall();});return;}}
-        if(pendingAutoInstall){pendingAutoInstall=false;channelBox->setEnabled(true);}channelStatus->setText(error+" Используется кэш, если он есть.");updateChannelStatus();reply->deleteLater();if(startupAutoCheck){startupAutoCheck=false;QTimer::singleShot(0,this,[this]{checkSelectedChannel();});}
+        else {const QString id=requestedChannel;TranslationManifest manifest;if(!parseTranslationManifest(body,id,&manifest,&error)){}else{
+            manifests.insert(id,manifest);settings.setValue("localizer/manifest/"+id,body);settings.sync();updateChannelStatus();reply->deleteLater();
+            if(pendingAutoInstall)QTimer::singleShot(0,this,[this]{beginAutoInstall();});
+            else if(channelBox->currentData().toString()==id && QFileInfo::exists(appDataPath+"/translation-install.json")){
+                const auto games=discoverWutheringInstallations(steamRoots());
+                const QString rv=games.size()==1?gameResourceVersion(games.first().gameDir):QString();
+                const auto state=selectedInstallState();
+                const QString cached=appDataPath+"/downloads/"+id+"/"+manifest.version+"/"+manifest.textHash.toLower()+"/"+manifest.textFileName;
+                if(!rv.isEmpty()&&normalizedVersion(rv).section('.',0,1)==normalizedVersion(manifest.version).section('.',0,1)&&
+                   (!state.healthy||state.packageDiffers||state.resourceVersionChanged||state.selectedChannelDiffers)&&!QFileInfo::exists(cached))
+                    QTimer::singleShot(0,this,[this,id]{if(!busyNetwork&&!pendingAutoInstall&&channelBox->currentData().toString()==id)downloadSelectedPackage();});
+            }
+            return;
+        }}
+        if(pendingAutoInstall){pendingAutoInstall=false;channelBox->setEnabled(true);}updateChannelStatus();channelStatus->setText(error+" Используется кэш, если он есть.");reply->deleteLater();if(startupAutoCheck){startupAutoCheck=false;QTimer::singleShot(0,this,[this]{checkSelectedChannel();});}
     }
     void finishPackageDownload(QNetworkReply *reply) {
         if (requestTimer) requestTimer->stop();
@@ -837,7 +827,8 @@ private:
                 pakEdit->setText(finalPath); saveInstallSettings(); updatePreview();
                 channelStatus->setText("Кешированный пакет повторно проверен XXH64: "+finalPath); progress->setValue(100); if(pendingAutoInstall)QTimer::singleShot(0,this,[this]{installCachedTranslation();}); return;
             }
-            stopPending();channelStatus->setText("Файл в кеше не совпадает с манифестом; он сохранён без изменений. Удалите его вручную и повторите загрузку."); return;
+            const QString quarantine=finalPath+".invalid-"+QUuid::createUuid().toString(QUuid::WithoutBraces);
+            if(!QFile::rename(finalPath,quarantine)){stopPending();channelStatus->setText("Повреждённый файл кеша не удалось сохранить отдельно; загрузка остановлена.");return;}
         }
         downloadPartPath=QDir(cacheDir).filePath("."+name+"."+QUuid::createUuid().toString(QUuid::WithoutBraces)+".part");
         downloadFinalPath=finalPath; downloadExpectedHash=expectedHash.toLower(); downloadName=name; downloadChannel=id;
@@ -875,7 +866,7 @@ private:
         connect(reply,&QNetworkReply::finished,this,[this,reply,purpose]{const QByteArray body=reply->readAll();finishRequest(reply,body,purpose);});
     }
     void fetchChannelIndex(){channelStatus->setText("Получение списка каналов…");requestManifest(QUrl(ChannelIndexUrl),"index");}
-    void checkSelectedChannel(){const QString id=channelBox->currentData().toString();for(const auto &c:channels)if(c.id==id){channelStatus->setText("Проверка манифеста "+c.name+"…");requestManifest(QUrl(c.manifestUrl),"channel");return;}channelStatus->setText("Сначала обновите список каналов.");}
+    void checkSelectedChannel(){if(busyNetwork){channelStatus->setText("Предыдущий сетевой запрос ещё выполняется.");return;}const QString id=channelBox->currentData().toString();for(const auto &c:channels)if(c.id==id){requestedChannel=id;channelStatus->setText("Проверка манифеста "+c.name+"…");requestManifest(QUrl(c.manifestUrl),"channel");return;}channelStatus->setText("Сначала обновите список каналов.");}
     QString installedResourceVersion()const {
         for(const auto &game:discoverWutheringInstallations(steamRoots())) {
             const QString found=EchoInstall::detectResourceVersion(game.gameDir);
@@ -906,8 +897,6 @@ private:
     }
     void refreshAutoInstallControls(){
         const auto games=discoverWutheringInstallations(steamRoots());
-        const QString id=channelBox->currentData().toString();
-        const auto it=manifests.constFind(id);
         EchoInstall::Inspection state;if(games.size()==1)state=selectedInstallState();
         verifyBtn->setVisible(state.owned);verifyBtn->setEnabled(state.owned&&!busyNetwork);
         repairBtn->setVisible(false);repairBtn->setEnabled(state.repairable&&!busyNetwork);
@@ -947,9 +936,6 @@ private:
             } else {
                 const QString rv=gameResourceVersion(games.first().gameDir);
                 reason=EchoInstall::englishMountPreflight(games.first().gameDir,rv);
-                if(reason.isEmpty()&&it!=manifests.cend()&&
-                   normalizedVersion(rv).section('.',0,1)!=normalizedVersion(it->version).section('.',0,1))
-                    reason=QString("Версия ресурсов игры %1 не совпадает с переводом %2.").arg(rv,it->version);
             }
         }
         if(busyNetwork)reason="Выполняется сетевой запрос; дождитесь завершения или нажмите «Отменить».";
@@ -962,6 +948,7 @@ private:
     }
     void beginAutoInstall(){
         auto clearPending=[this](){pendingAutoInstall=false;pendingInstallChannel.clear();pendingInstallGame.clear();pendingInstallResourceVersion.clear();pendingInstallTranslationVersion.clear();channelBox->setEnabled(true);};
+        if(busyNetwork){channelStatus->setText("Дождитесь завершения текущего запроса.");return;}
         const auto games=discoverWutheringInstallations(steamRoots());if(games.size()!=1){clearPending();channelStatus->setText(games.isEmpty()?"Установка недоступна: не найден Steam manifest AppID 3513350.":"Установка заблокирована: найдено несколько игровых установок Steam.");return;}
         if(games.first().gameDir.isEmpty()){clearPending();channelStatus->setText(games.first().discoveryError);return;}
         if(EchoInstall::gameRunning(games.first().gameDir)){
@@ -972,7 +959,8 @@ private:
             QMessageBox::information(this,"Установка пока недоступна",why);
             return;
         }
-        const QString id=pendingAutoInstall&&!pendingInstallChannel.isEmpty()?pendingInstallChannel:channelBox->currentData().toString();if(!manifests.contains(id)){pendingAutoInstall=true;pendingInstallChannel=id;pendingInstallGame=games.first().gameDir;pendingInstallResourceVersion=gameResourceVersion(games.first().gameDir);channelBox->setEnabled(false);checkSelectedChannel();return;}
+        const QString id=pendingAutoInstall&&!pendingInstallChannel.isEmpty()?pendingInstallChannel:channelBox->currentData().toString();if(!pendingAutoInstall){pendingAutoInstall=true;pendingInstallChannel=id;pendingInstallGame=games.first().gameDir;pendingInstallResourceVersion=gameResourceVersion(games.first().gameDir);channelBox->setEnabled(false);checkSelectedChannel();return;}
+        if(!manifests.contains(id)){clearPending();channelStatus->setText("Не удалось получить актуальный манифест перевода.");return;}
         const QString version=gameResourceVersion(games.first().gameDir);const auto m=manifests.value(id);
         const QString mountProblem=EchoInstall::englishMountPreflight(games.first().gameDir,version);
         if(!mountProblem.isEmpty()){clearPending();channelStatus->setText(mountProblem);refreshAutoInstallControls();return;}
@@ -1016,7 +1004,11 @@ private:
         const QString installed=installedResourceVersion();
         const auto games=discoverWutheringInstallations(steamRoots());
         const auto state=selectedInstallState();
-        if(state.owned){versionStatus->setText(state.healthy?"Установлен · "+state.channel+" v"+state.translationVersion:(state.repairable?"Нужна проверка Mount":(state.reinstallable?"Требуется повторная установка":"Нарушена целостность")));channelStatus->setText(it==manifests.cend()?state.message+" · проверка обновления доступна вручную.":state.message);return;}
+        if(state.owned){
+            if(state.resourceVersionChanged||state.packageDiffers||state.selectedChannelDiffers){versionStatus->setText("Доступно обновление");channelStatus->setText("Доступна новая версия перевода. Проверьте совместимость и нажмите «Обновить перевод».");}
+            else {versionStatus->setText(state.healthy?"Установлен · "+state.channel+" v"+state.translationVersion:(state.repairable?"Нужна проверка Mount":(state.reinstallable?"Требуется повторная установка":"Нарушена целостность")));channelStatus->setText(it==manifests.cend()?state.message+" · проверка обновления доступна вручную.":state.message);}
+            return;
+        }
         if(it==manifests.cend()){
             versionStatus->setText("Не проверено");
             if(installed.isEmpty()) channelStatus->setText("Выберите канал и проверьте наличие обновления.");
@@ -1044,24 +1036,19 @@ private:
         connect(pick,&QPushButton::clicked,this,[edit,picker]{const auto p=picker();if(!p.isEmpty())edit->setText(p);});
         return row;
     }
-    void addProton(const QString &name,const QString &path){for(int i=0;i<protonBox->count();++i)if(protonBox->itemData(i).toString()==path){protonBox->setCurrentIndex(i);return;}protonBox->addItem(name,path);protonBox->setCurrentIndex(protonBox->count()-1);}
-    void refreshProtons(){const QString selected=settings.value("proton").toString();protonBox->clear();for(const auto&p:discoverProton())addProton(p.name,p.path);if(!selected.isEmpty()&&QFileInfo(selected).isExecutable())addProton("Сохранённый путь — "+QFileInfo(selected).fileName(),selected);if(protonBox->count()==0)protonBox->addItem("Proton не найден — укажите путь","");for(int i=0;i<protonBox->count();++i)if(protonBox->itemData(i).toString()==selected)protonBox->setCurrentIndex(i);}
-    void loadSettings(){gameEdit->setText(settings.value("gamePath").toString());compatEdit->setText(settings.value("compatPath",defaultCompat()).toString());pakEdit->setText(settings.value("localizer/pak").toString());sigEdit->setText(settings.value("localizer/sig").toString());targetEdit->setText(settings.value("localizer/target").toString());}
-    void saveSettings(){settings.setValue("gamePath",gameEdit->text());settings.setValue("compatPath",compatEdit->text());settings.setValue("proton",protonPath());settings.setValue("launchMode",launchMode->currentData());settings.sync();}
+    void loadSettings(){pakEdit->setText(settings.value("localizer/pak").toString());sigEdit->setText(settings.value("localizer/sig").toString());targetEdit->setText(settings.value("localizer/target").toString());}
     void saveInstallSettings(){settings.setValue("localizer/pak",pakEdit->text());settings.setValue("localizer/sig",sigEdit->text());settings.setValue("localizer/target",targetEdit->text());settings.sync();}
-    void refreshStatus(){const bool steamMode=launchMode->currentData().toString()=="steam";
-        if(steamMode){
-            const auto games=discoverWutheringInstallations(steamRoots());
-            if(games.size()==1){
-                const QString root=games.first().gameDir.isEmpty()?games.first().installDir:games.first().gameDir;
-                const QString exe=guessGameExe(root);
-                if(!exe.isEmpty()&&gameEdit->text()!=exe)gameEdit->setText(exe);
-            }
-        }
-        const QFileInfo game(gameEdit->text()),proton(protonPath());
-        launchBtn->setText(steamMode?"Играть через Steam":"Играть через Proton");
-        launchBtn->setToolTip(steamMode?"Запуск Wuthering Waves через Steam (AppID 3513350)":"Запуск выбранного launcher.exe через Proton; параметры на странице «Настройки».");
-        QStringList problems;if(steamMode){if(discoverWutheringInstallations(steamRoots()).isEmpty())problems<<"не найден Steam manifest 3513350 и установленная игра";if(steamExecutable().isEmpty())problems<<"не найден исполняемый файл Steam";}else{if(!game.exists()||!game.isFile()||game.suffix().compare("exe",Qt::CaseInsensitive)!=0)problems<<"выберите существующий .exe игры";if(isShippingExecutable(gameEdit->text()))problems<<"Client-Win64-Shipping.exe запускать напрямую нельзя";else if(!isSupportedStandaloneLauncher(gameEdit->text()))problems<<"для отдельного режима выберите launcher.exe";if(!proton.isExecutable())problems<<"выберите исполняемый скрипт Proton";if(compatEdit->text().trimmed().isEmpty())problems<<"укажите каталог compatdata";}const auto roots=steamRoots();const QString resourceVersion=installedResourceVersion();const QString ready=(steamMode?QString("Игра в Steam обнаружена · AppID 3513350"):QString("Отдельный запуск launcher.exe · совместимость не гарантируется"))+" · ресурсы "+(resourceVersion.isEmpty()?QString("версия не найдена"):QString("v"+resourceVersion));statusLabel->setText(problems.isEmpty()?ready:"Требуется настройка: "+problems.join("; "));launchBtn->setEnabled(problems.isEmpty()&&(!process||process->state()==QProcess::NotRunning));protonBox->setEnabled(!steamMode);compatEdit->setEnabled(!steamMode);}
+    void refreshStatus(){
+        const auto games=discoverWutheringInstallations(steamRoots());
+        QStringList problems;
+        if(games.isEmpty())problems<<"не найдена установленная игра в библиотеках Steam";
+        if(steamExecutable().isEmpty())problems<<"не найден Steam";
+        const QString version=installedResourceVersion();
+        statusLabel->setText(problems.isEmpty()?"Игра найдена в Steam · ресурсы "+(version.isEmpty()?QString("не определены"):"v"+version):"Требуется настройка: "+problems.join("; "));
+        launchBtn->setText("Играть через Steam");
+        launchBtn->setToolTip("Запустить Wuthering Waves через Steam");
+        launchBtn->setEnabled(problems.isEmpty());
+    }
     bool currentPlan(QList<InstallItem>*plan,QString*error)const{return makePlan(pakEdit->text(),sigEdit->text(),targetEdit->text(),plan,error);}
     void updatePreview(){QList<InstallItem> plan;QString error;if(!currentPlan(&plan,&error)){preview->setPlainText("План установки пока недоступен.\n"+error);installBtn->setEnabled(false);return;}QStringList lines;lines<<"Папка, выбранная вами: " + canonicalOrAbsolute(targetEdit->text());for(const auto &item:plan){const QFileInfo src(item.source);lines<<"\nИСТОЧНИК: "+item.source+"\nРазмер: "+QLocale().formattedDataSize(src.size())+"\nSHA-256: "+QString::fromLatin1(fileHash(item.source).toHex())+"\nНАЗНАЧЕНИЕ: "+item.destination+"\nДействие: "+(item.overwrite?"будет создана резервная копия и файл заменён":"будет создан новый файл");}preview->setPlainText(lines.join("\n"));installBtn->setEnabled(true);}
     void installSelected(){QList<InstallItem> plan;QString error;if(!currentPlan(&plan,&error)){QMessageBox::warning(this,"Нельзя установить",error);updatePreview();return;}updatePreview();const QString confirmedPreview=preview->toPlainText();const auto answer=QMessageBox::question(this,"Подтвердите установку","Будут изменены только указанные ниже файлы внутри выбранной папки:\n\n"+confirmedPreview+"\n\nПродолжить?",QMessageBox::Yes|QMessageBox::No,QMessageBox::No);if(answer!=QMessageBox::Yes)return;
@@ -1073,8 +1060,7 @@ private:
         progress->setRange(0,100);progress->setValue(100);progressLabel->setText("Файлы записаны и проверены. Резервная копия: "+backup);QMessageBox::information(this,"Установка завершена","Проверка SHA-256 пройдена.\nРезервные копии (если были замены):\n"+backup);updatePreview();refreshDiagnostics();}
     void logLine(const QString &line){QDir().mkpath(QFileInfo(logPath).absolutePath());QFile f(logPath);if(f.open(QIODevice::WriteOnly|QIODevice::Append|QIODevice::Text)){QTextStream out(&f);out<<line<<'\n';}}
     void launchGame(){
-        const bool steamMode=launchMode->currentData().toString()=="steam";
-        if (steamMode) {
+        {
             const auto installs=discoverWutheringInstallations(steamRoots());
             const QString steam=steamExecutable();
             if(installs.isEmpty()||steam.isEmpty()){QMessageBox::warning(this,"Steam не готов","Не найден Steam с установленной Wuthering Waves (appmanifest_3513350.acf). Проверьте библиотеки Steam.");refreshStatus();return;}
@@ -1113,15 +1099,12 @@ private:
             logLine("\n=== "+QDateTime::currentDateTime().toString(Qt::ISODate)+" ===");logLine("Launch mode: Steam-managed");logLine("Steam: "+steam);logLine("AppID: 3513350");logLine("Install: "+installs.first().installDir);logLine("Client: "+installs.first().gameDir);
             QString error;
             if(!QProcess::startDetached(steam,steamLaunchArguments(),QString(),nullptr)){error="Не удалось передать запуск Steam. Убедитесь, что клиент Steam запущен.";logLine(error);QMessageBox::critical(this,"Ошибка запуска",error);return;}
-            statusLabel->setText("Команда запуска передана Steam (AppID 3513350). Steam управляет Proton и compatdata.");logLine("Steam launch request submitted.");saveSettings();refreshDiagnostics();return;
+            statusLabel->setText("Команда запуска передана Steam (AppID 3513350). Steam управляет Proton и compatdata.");logLine("Steam launch request submitted.");refreshDiagnostics();return;
         }
-        const QString game=QFileInfo(gameEdit->text()).absoluteFilePath(),proton=QFileInfo(protonPath()).absoluteFilePath(),compat=QDir::cleanPath(QFileInfo(compatEdit->text()).absoluteFilePath());
-        if(isShippingExecutable(game)){QMessageBox::warning(this,"Прямой запуск запрещён","Client-Win64-Shipping.exe нельзя запускать напрямую. Переключитесь на режим Steam: Steam должен запустить штатный launcher Wuthering Waves (AppID 3513350).");refreshStatus();return;}
-        process=new QProcess(this);QString root=qEnvironmentVariable("STEAM_COMPAT_CLIENT_INSTALL_PATH");if(root.isEmpty()&&!steamRoots().isEmpty())root=steamRoots().first();QString error;
-        if(!launchStandaloneProton(process,proton,game,compat,root,&error)){QMessageBox::warning(this,"Нельзя запустить",error);refreshStatus();return;}
-        process->setProcessChannelMode(QProcess::MergedChannels);logLine("\n=== "+QDateTime::currentDateTime().toString(Qt::ISODate)+" ===");logLine("Launch mode: standalone Proton (compatibility uncertain)");logLine("Proton: "+proton);logLine("Launcher: "+game);logLine("Compatdata: "+compat);connect(process,&QProcess::readyReadStandardOutput,this,[this]{logLine(QString::fromLocal8Bit(process->readAllStandardOutput()).trimmed());});connect(process,qOverload<int,QProcess::ExitStatus>(&QProcess::finished),this,[this](int code,QProcess::ExitStatus status){logLine("Process finished: "+QString::number(code));statusLabel->setText(status==QProcess::NormalExit?"Процесс завершён (код "+QString::number(code)+"). Лог: "+logPath:"Процесс аварийно завершился. См. лог: "+logPath);refreshStatus();refreshDiagnostics();});connect(process,&QProcess::errorOccurred,this,[this](QProcess::ProcessError){logLine("Process error: "+process->errorString());statusLabel->setText("Ошибка запуска: "+process->errorString()+". Проверьте Proton и лог.");refreshStatus();});statusLabel->setText("Запуск launcher.exe через Proton… Лог: "+logPath);process->start();saveSettings();refreshDiagnostics();}
+    }
     QString recentLog()const{QFile f(logPath);if(!f.open(QIODevice::ReadOnly|QIODevice::Text))return"(лог запуска пока не создан)";auto s=QString::fromUtf8(f.readAll());if(s.size()>12000)s=s.right(12000);return s;}
-    void refreshDiagnostics(){diagnostic->setPlainText("ECHO Native diagnostics\nНастройки: "+settingsPath+"\nЛог запуска: "+logPath+"\nPAK: "+(pakEdit->text().isEmpty()?"(не выбран)":pakEdit->text())+"\nSIG: "+(sigEdit->text().isEmpty()?"(не выбран)":sigEdit->text())+"\nПапка локализации: "+(targetEdit->text().isEmpty()?"(не выбрана)":targetEdit->text())+"\nРезервные копии: "+appDataPath+"/backups/localizer\nИгра: "+(gameEdit->text().isEmpty()?"(не выбрана)":gameEdit->text())+"\nProton: "+(protonPath().isEmpty()?"(не выбран)":protonPath())+"\nCompatdata: "+compatEdit->text()+"\nSteam roots: "+(steamRoots().isEmpty()?"не найден":steamRoots().join("; "))+"\nRuntime: Qt "+QString(qVersion())+"; WebView2 не используется.\nОригинальные обновления/моды ECHO: недоступны.\n\nПоследний лог запуска:\n"+recentLog());}
+    void refreshDiagnostics(){diagnostic->setPlainText("Журнал ECHO Native\nЛог запуска: "+logPath+"\n\n"+recentLog());}
+
 public:
     bool uiChecks(QString *failure=nullptr) const {
         auto fail=[&](const QString &why){if(failure)*failure=why;return false;};
@@ -1145,7 +1128,7 @@ public:
         }
         bool hasTitle=false;for(const auto *label:findChildren<QLabel*>("pageTitle"))if(label->text()=="Текстовый перевод")hasTitle=true;if(!hasTitle)return fail("main purpose label missing");
         auto *homePlay=pages->widget(0)->findChild<QPushButton*>("playGameButton");
-        if(!homePlay||homePlay!=launchBtn||(homePlay->text()!="Играть через Steam"&&homePlay->text()!="Играть через Proton"))return fail("Play button is missing from the main page");
+        if(!homePlay||homePlay!=launchBtn||homePlay->text()!="Играть через Steam")return fail("Play button is missing from the main page");
         if(pages->widget(1)->findChild<QPushButton*>("playGameButton"))return fail("Steam launch button is duplicated in settings");
         if(pages->widget(0)->findChild<QPushButton*>("textButton") == downloadBtn ||
            pages->widget(0)->findChild<QWidget*>("manualSection"))return fail("advanced tools leaked onto the main page");
@@ -1167,7 +1150,7 @@ public:
         else if(state=="repair") { statusLabel->setText("Игра найдена · ресурсы 3.7.0"); channelStatus->setText("Перевод требует восстановления. Файлы перевода сохранены."); versionStatus->setText("Нужно восстановить"); autoInstallBtn->show(); autoInstallBtn->setText("Восстановить перевод"); autoInstallBtn->setEnabled(true); }
         else if(state=="missing") { statusLabel->setText("Игра найдена · ресурсы 3.7.0"); channelStatus->setText("Выберите перевод, чтобы установить его в игру."); versionStatus->setText("Не установлен"); autoInstallBtn->show(); autoInstallBtn->setText("Установить перевод"); autoInstallBtn->setEnabled(true); }
     }
-    void smokeChecks(){if(!guessGameExe("/not/a/game").isEmpty())qFatal("smoke: unexpected game EXE discovery");if(protonBox->count()==0)qFatal("smoke: Proton selector is empty");if(!QFileInfo(settingsPath).isAbsolute()||!settingsPath.contains("ECHO Native"))qFatal("smoke: settings path is not app scoped");if(installBtn->isEnabled())qFatal("smoke: installer enabled without explicit sources");QString error;if(!uiChecks(&error))qFatal("smoke: %s",qPrintable(error));fprintf(stdout,"PASS: Qt UI construction, text-only localizer screen, Proton selector, collapsed manual install, app-scoped settings\n");}
+    void smokeChecks(){if(!guessGameExe("/not/a/game").isEmpty())qFatal("smoke: unexpected game EXE discovery");if(!QFileInfo(settingsPath).isAbsolute()||!settingsPath.contains("ECHO Native"))qFatal("smoke: settings path is not app scoped");if(installBtn->isEnabled())qFatal("smoke: installer enabled without explicit sources");QString error;if(!uiChecks(&error))qFatal("smoke: %s",qPrintable(error));fprintf(stdout,"PASS: Qt UI construction, Steam launch, collapsed manual install, app-scoped settings\n");}
 private:
 };
 
@@ -1383,6 +1366,14 @@ int main(int argc,char **argv){
         QToolButton#manualDisclosure { border: 0; color: #b9c0c4; background: transparent; padding: 8px 2px; font-weight: 600; text-align: left; }
         QToolButton#manualDisclosure:hover { color: #e9ecef; }
         QToolButton#manualDisclosure:focus { border: 1px solid #d4b17f; border-radius: 6px; }
+        /* Gamepad and keyboard focus must stay visible on selected and special buttons. */
+        QPushButton#navButton:focus, QPushButton#channelCard:focus,
+        QPushButton#channelCard:checked:focus, QPushButton#playGameButton:focus,
+        QPushButton#primaryButton:focus, QPushButton#secondaryButton:focus,
+        QPushButton#checkUpdatesButton:focus, QPushButton#textButton:focus,
+        QToolButton#sectionDisclosure:focus, QToolButton#manualDisclosure:focus {
+            border: 3px solid #ffffff; background: #55452f; color: #ffffff;
+        }
         #progressLabel, #versionValue { color: #e4d0ad; font-weight: 600; }
         #inlineStatus { color: #d5dbe0; }
         QProgressBar { background: #272d31; border: 0; border-radius: 4px; }
