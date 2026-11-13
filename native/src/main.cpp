@@ -1,4 +1,5 @@
 #include <QApplication>
+#include <QAbstractButton>
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QCheckBox>
@@ -21,6 +22,7 @@
 #include <QGroupBox>
 #include <QHash>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
 #include <QLocale>
 #include <QLineEdit>
@@ -54,6 +56,26 @@
 #include "controller.h"
 
 namespace {
+class DialogLocalizer final : public QObject {
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override {
+        if(event->type()!=QEvent::Show)return false;
+        auto *box=qobject_cast<QMessageBox *>(object);
+        if(!box)return false;
+        for(auto *button:box->buttons()){
+            switch(box->standardButton(button)){
+            case QMessageBox::Yes: button->setText("Да");break;
+            case QMessageBox::No: button->setText("Нет");break;
+            case QMessageBox::Ok: button->setText("Понятно");break;
+            case QMessageBox::Cancel: button->setText("Отмена");break;
+            case QMessageBox::Close: button->setText("Закрыть");break;
+            case QMessageBox::Retry: button->setText("Повторить");break;
+            default: break;
+            }
+        }
+        return false;
+    }
+};
 constexpr qint64 MaxPayloadBytes = 8LL * 1024 * 1024 * 1024;
 constexpr qint64 MaxManifestBytes = 128 * 1024;
 constexpr qint64 MaxDownloadBytes = 4LL * 1024 * 1024 * 1024;
@@ -624,9 +646,9 @@ public:
         connect(manualToggle,&QToolButton::toggled,this,[manualToggle,manualBody](bool open){manualToggle->setArrowType(open?Qt::DownArrow:Qt::RightArrow);manualBody->setVisible(open);});
         auto *manualHint = new QLabel("Только если вы самостоятельно проверили папку назначения. Перед записью приложение покажет план и запросит подтверждение."); manualHint->setObjectName("secondaryText"); manualHint->setWordWrap(true); manualBodyLayout->addWidget(manualHint);
         auto *fileFormWidget = new QWidget; auto *fileForm = new QFormLayout(fileFormWidget); fileForm->setContentsMargins(0, 0, 0, 0); fileForm->setHorizontalSpacing(12); fileForm->setVerticalSpacing(8);
-        pakEdit = new QLineEdit; pakEdit->setPlaceholderText("Проверенный или выбранный .pak"); auto *pakRow = browseRow(pakEdit, "Выбрать…", [this]{return QFileDialog::getOpenFileName(this,"Выберите PAK","","PAK (*.pak)");}); fileForm->addRow("PAK",pakRow);
-        sigEdit = new QLineEdit; sigEdit->setPlaceholderText("Необязательный файл с тем же именем"); auto *sigRow = browseRow(sigEdit,"Выбрать…",[this]{return QFileDialog::getOpenFileName(this,"Выберите SIG","","SIG (*.sig)");}); fileForm->addRow("SIG",sigRow);
-        targetEdit = new QLineEdit; targetEdit->setPlaceholderText("Выберите папку явно"); auto *targetRow = browseRow(targetEdit,"Выбрать…",[this]{return QFileDialog::getExistingDirectory(this,"Выберите папку локализации","",QFileDialog::ShowDirsOnly);}); fileForm->addRow("Папка",targetRow); manualBodyLayout->addWidget(fileFormWidget);
+        pakEdit = new QLineEdit; pakEdit->setPlaceholderText("Проверенный или выбранный .pak"); auto *pakRow = browseRow(pakEdit, "Выбрать…", [this]{return QFileDialog::getOpenFileName(this,"Выберите PAK","","PAK (*.pak)",nullptr,QFileDialog::DontUseNativeDialog);}); fileForm->addRow("PAK",pakRow);
+        sigEdit = new QLineEdit; sigEdit->setPlaceholderText("Необязательный файл с тем же именем"); auto *sigRow = browseRow(sigEdit,"Выбрать…",[this]{return QFileDialog::getOpenFileName(this,"Выберите SIG","","SIG (*.sig)",nullptr,QFileDialog::DontUseNativeDialog);}); fileForm->addRow("SIG",sigRow);
+        targetEdit = new QLineEdit; targetEdit->setPlaceholderText("Выберите папку явно"); auto *targetRow = browseRow(targetEdit,"Выбрать…",[this]{return QFileDialog::getExistingDirectory(this,"Выберите папку локализации","",QFileDialog::ShowDirsOnly|QFileDialog::DontUseNativeDialog);}); fileForm->addRow("Папка",targetRow); manualBodyLayout->addWidget(fileFormWidget);
         preview = new QPlainTextEdit; preview->setObjectName("installPreview"); preview->setReadOnly(true); preview->setMinimumHeight(100); preview->setMaximumHeight(150); preview->setPlaceholderText("Предпросмотр путей и замен появится после выбора файлов."); manualBodyLayout->addWidget(preview);
         auto *installActions = new QHBoxLayout; auto *previewBtn = new QPushButton("Обновить предпросмотр"); previewBtn->setObjectName("secondaryButton"); installBtn = new QPushButton("Установить выбранные файлы…"); installBtn->setObjectName("secondaryButton"); installActions->addWidget(previewBtn); installActions->addWidget(installBtn); manualBodyLayout->addLayout(installActions);
         homeScroll->setWidget(home);
@@ -891,9 +913,11 @@ private:
     void repairInstalledMount(){
         const auto games=discoverWutheringInstallations(steamRoots());if(games.size()!=1){channelStatus->setText("Восстановление доступно только при одной обнаруженной Steam-установке.");return;}
         const auto state=selectedInstallState();if(!state.repairable){channelStatus->setText(state.message);refreshAutoInstallControls();return;}
-        const QString prompt=QString("SHA-1 установленного текстового PAK совпадает с журналом ECHO.\n\nБудет восстановлена только принадлежащая ECHO запись в таблице ресурсов версии %1. Продолжить?").arg(state.installedResourceVersion);
-        if(QMessageBox::question(this,"Восстановить запись перевода",prompt,QMessageBox::Yes|QMessageBox::No,QMessageBox::No)!=QMessageBox::Yes)return;
-        const auto result=EchoInstall::repair(appDataPath,state.currentResourceVersion);channelStatus->setText(result.message);refreshAutoInstallControls();
+        const auto result=EchoInstall::repair(appDataPath,state.currentResourceVersion);
+        logLine("Translation repair: "+result.message);
+        refreshAutoInstallControls();
+        channelStatus->setText(result.ok?"Перевод восстановлен. Можно играть.":"Не удалось восстановить перевод: "+result.message);
+        versionStatus->setText(result.ok?"Перевод восстановлен":"Восстановление не выполнено");
     }
     void refreshAutoInstallControls(){
         const auto games=discoverWutheringInstallations(steamRoots());
@@ -1064,36 +1088,22 @@ private:
             const auto installs=discoverWutheringInstallations(steamRoots());
             const QString steam=steamExecutable();
             if(installs.isEmpty()||steam.isEmpty()){QMessageBox::warning(this,"Steam не готов","Не найден Steam с установленной Wuthering Waves (appmanifest_3513350.acf). Проверьте библиотеки Steam.");refreshStatus();return;}
-            // The game updater can restore vanilla MountLang_en.txt without
-            // removing the installed, verified translation PAK. Never write
-            // during gameplay. Offer a one-time safe repair before handing
-            // launch control to Steam, with an explicit user choice.
+            // Restore the verified ECHO entry if the game update removed it.
+            // The repair routine checks ownership, hash and running processes
+            // and backs up the original table before changing it.
             if(installs.size()==1){
                 const auto state=selectedInstallState();
                 if(state.repairable){
-                    const auto choice=QMessageBox::question(this,"Перевод отключён после обновления",
-                        "Русский PAK цел, но игра сбросила его запись подключения.\n\n"
-                        "Восстановить перевод перед запуском? Файл Mount будет сохранён в резервную копию.\n\n"
-                        "«Нет» — запустить игру без восстановления перевода.",
-                        QMessageBox::Yes|QMessageBox::No|QMessageBox::Cancel,QMessageBox::Yes);
-                    if(choice==QMessageBox::Cancel)return;
-                    if(choice==QMessageBox::Yes){
-                        const auto verified=selectedInstallState();
-                        if(!verified.repairable||verified.currentResourceVersion!=state.currentResourceVersion){
-                            QMessageBox::warning(this,"Перевод изменился","Состояние файлов поменялось во время подтверждения. Повторите проверку перед запуском.");
-                            refreshAutoInstallControls();return;
-                        }
-                        const auto restored=EchoInstall::repair(appDataPath,verified.currentResourceVersion);
-                        channelStatus->setText(restored.message);
-                        refreshAutoInstallControls();
-                        if(!restored.ok){
-                            QMessageBox::critical(this,"Не удалось восстановить перевод",restored.message+"\nИгра не запущена. Проверьте файлы и повторите.");
-                            return;
-                        }
-                        logLine("Translation Mount restored before Steam launch after integrity verification.");
-                    }else{
-                        logLine("Mount repair declined by user; starting game without restoring translation.");
+                    const auto restored=EchoInstall::repair(appDataPath,state.currentResourceVersion);
+                    logLine("Translation repair before launch: "+restored.message);
+                    refreshAutoInstallControls();
+                    if(!restored.ok){
+                        channelStatus->setText("Не удалось восстановить перевод: "+restored.message+" Игра не запущена.");
+                        versionStatus->setText("Восстановление не выполнено");
+                        return;
                     }
+                    channelStatus->setText("Перевод восстановлен. Запускаем игру.");
+                    versionStatus->setText("Перевод восстановлен");
                 }
             }
             logLine("\n=== "+QDateTime::currentDateTime().toString(Qt::ISODate)+" ===");logLine("Launch mode: Steam-managed");logLine("Steam: "+steam);logLine("AppID: 3513350");logLine("Install: "+installs.first().installDir);logLine("Client: "+installs.first().gameDir);
@@ -1308,12 +1318,13 @@ int main(int argc,char **argv){
     const bool controllerTest=argc>1&&QString::fromLocal8Bit(argv[1])=="--controller-test";
     const bool autoInstallTest=argc>1&&QString::fromLocal8Bit(argv[1])=="--auto-install-test";
     const bool screenshot=argc>1&&QString::fromLocal8Bit(argv[1])=="--ui-screenshot";
+    const bool dialogScreenshot=argc>1&&QString::fromLocal8Bit(argv[1])=="--dialog-screenshot";
     const QString screenshotPath=screenshot&&argc>2?QString::fromLocal8Bit(argv[2]):QString();
     const QString screenshotState=screenshot&&argc>3?QString::fromLocal8Bit(argv[3]):QStringLiteral("missing");
     QSize screenshotSize(940,680);
     if(screenshot&&argc>4){const auto parts=QString::fromLocal8Bit(argv[4]).split('x');if(parts.size()==2)screenshotSize=QSize(parts.at(0).toInt(),parts.at(1).toInt());else screenshotSize=QSize();}
     QTemporaryDir isolatedUiState;
-    if (smoke || uiTest || screenshot || controllerTest) {
+    if (smoke || uiTest || screenshot || controllerTest || dialogScreenshot) {
         if (!isolatedUiState.isValid()) { fprintf(stderr, "FAIL: isolated UI state unavailable\n"); return 2; }
         const QByteArray statePath = QFile::encodeName(isolatedUiState.path());
         qputenv("XDG_CONFIG_HOME", statePath);
@@ -1321,9 +1332,15 @@ int main(int argc,char **argv){
         qputenv("XDG_CACHE_HOME", statePath);
     }
     QApplication app(argc,argv);app.setOrganizationName("ECHO Native");app.setApplicationName("ECHO Native");app.setStyle("Fusion");
+    DialogLocalizer dialogLocalizer;app.installEventFilter(&dialogLocalizer);
     app.setStyleSheet(R"QSS(
         QWidget { color: #edf0f2; font-family: "Noto Sans", "DejaVu Sans", sans-serif; font-size: 11pt; }
         QWidget#rootWindow, QStackedWidget, QScrollArea, #homePage, #settingsPage { background: #101318; border: 0; }
+        QMessageBox, QFileDialog { background: #181d22; color: #edf0f2; }
+        QMessageBox QLabel, QFileDialog QLabel { color: #edf0f2; }
+        QMessageBox QPushButton { min-width: 90px; min-height: 32px; }
+        QMessageBox QPushButton:focus { border: 3px solid #ffffff; background: #55452f; color: #ffffff; }
+        QFileDialog QAbstractItemView { background: #171a1c; color: #edf0f2; selection-background-color: #806a4c; }
         QWidget#topBar { background: #14181d; border-bottom: 1px solid #282f35; }
         QLabel, QCheckBox { background: transparent; }
         QLabel#controllerHint { background: #1e252a; color: #d8b987; padding: 5px 14px; font-size: 9pt; }
@@ -1386,6 +1403,22 @@ int main(int argc,char **argv){
         QScrollBar::handle:vertical { background: #3a4146; min-height: 30px; border-radius: 4px; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
     )QSS");
+    if(dialogScreenshot){
+        if(argc<3){fprintf(stderr,"FAIL: screenshot path is required\n");return 2;}
+        QMessageBox box(QMessageBox::Question,"Подтвердите установку",
+                        "Будет установлен русский перевод. Продолжить?",
+                        QMessageBox::Yes|QMessageBox::No);
+        box.setDefaultButton(QMessageBox::No);box.show();app.processEvents();
+        auto *yes=box.button(QMessageBox::Yes);auto *no=box.button(QMessageBox::No);
+        const QImage image=box.grab().toImage();
+        auto *label=box.findChild<QLabel *>("qt_msgbox_label");
+        if(!yes||!no||yes->text()!="Да"||no->text()!="Нет"||image.isNull()||
+           qGray(image.pixel(5,5))>128||!label||label->palette().color(QPalette::WindowText).lightness()<160){
+            fprintf(stderr,"FAIL: dialog appearance or Russian button labels\n");return 1;
+        }
+        if(!image.save(QString::fromLocal8Bit(argv[2]))){fprintf(stderr,"FAIL: cannot save dialog screenshot\n");return 1;}
+        fprintf(stdout,"PASS: dark dialog, readable text and Russian buttons\n");return 0;
+    }
     if(resourceCheck){
         const auto games=discoverWutheringInstallations(steamRoots());
         if(games.size()!=1){fprintf(stderr,"ERROR: Steam installations found: %lld\n",static_cast<long long>(games.size()));return 2;}

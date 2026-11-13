@@ -4,18 +4,25 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QFile>
+#include <QFileDialog>
 #include <QFocusFrame>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPointer>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QTemporaryDir>
 #include <QVBoxLayout>
 #include <QtGlobal>
 #include <cmath>
+#include <algorithm>
 #include <limits>
 
 class Controller final : public QObject {
@@ -56,6 +63,7 @@ public:
    default:break;
   }
  }
+ bool focusVisibleFor(QWidget *w)const{return focusFrame&&focusFrame->isVisible()&&focusFrame->widget()==w;}
 private:
  void open(SDL_JoystickID id){if(pad)return;pad=SDL_OpenGamepad(id);if(status)status->setVisible(pad!=nullptr);}
  void poll(){
@@ -122,11 +130,30 @@ private:
    focusFrame->setWidget(w);focusFrame->show();focusFrame->raise();
   }else focusFrame->hide();
  }
- static void key(QWidget *w,int value){
+ static void key(QWidget *w,int value,Qt::KeyboardModifiers modifiers=Qt::NoModifier){
   if(!w)return;
   QPointer<QWidget> guarded=w;
-  QKeyEvent down(QEvent::KeyPress,value,Qt::NoModifier);QApplication::sendEvent(w,&down);
-  if(guarded){QKeyEvent up(QEvent::KeyRelease,value,Qt::NoModifier);QApplication::sendEvent(guarded,&up);}
+  QKeyEvent down(QEvent::KeyPress,value,modifiers);QApplication::sendEvent(w,&down);
+  if(guarded){QKeyEvent up(QEvent::KeyRelease,value,modifiers);QApplication::sendEvent(guarded,&up);}
+ }
+ QWidget *modalFocus(QWidget *modal)const{
+  auto *focus=QApplication::focusWidget();
+  if(focus&&(focus==modal||modal->isAncestorOf(focus)))return focus;
+  return modal->focusWidget()?modal->focusWidget():modal;
+ }
+ void messageBoxNavigate(QMessageBox *box,int dx,int dy){
+  QList<QAbstractButton*> buttons;
+  for(auto *button:box->buttons())if(button->isVisible()&&button->isEnabled()&&button->focusPolicy()!=Qt::NoFocus)buttons.append(button);
+  if(buttons.isEmpty())return;
+  std::sort(buttons.begin(),buttons.end(),[](QAbstractButton *a,QAbstractButton *b){
+   const QPoint pa=a->mapToGlobal(a->rect().center()),pb=b->mapToGlobal(b->rect().center());
+   return pa.y()!=pb.y()?pa.y()<pb.y():pa.x()<pb.x();
+  });
+  QWidget *focus=modalFocus(box);int current=buttons.indexOf(qobject_cast<QAbstractButton*>(focus));
+  if(current<0){auto *preferred=box->defaultButton();current=buttons.indexOf(preferred);if(current<0)current=0;}
+  else {const int step=(dx<0||dy<0)?-1:1;current=(current+step+buttons.size())%buttons.size();}
+  buttons.at(current)->setFocus(Qt::OtherFocusReason);
+  showFocus(buttons.at(current));
  }
  void navigate(int dx,int dy){
   const int arrow=dy<0?Qt::Key_Up:dy>0?Qt::Key_Down:dx<0?Qt::Key_Left:Qt::Key_Right;
@@ -134,8 +161,8 @@ private:
    auto *f=QApplication::focusWidget();key(f?f:popup,arrow);return;
   }
   if(auto *modal=QApplication::activeModalWidget()){
-   auto *f=QApplication::focusWidget();if(!f)f=modal;
-   key(f,arrow);return;
+   if(auto *box=qobject_cast<QMessageBox*>(modal)){messageBoxNavigate(box,dx,dy);return;}
+   key(modalFocus(modal),arrow);return;
   }
   auto *f=QApplication::focusWidget();
   if(!f||!(f==root||root->isAncestorOf(f))){
@@ -170,6 +197,8 @@ private:
   }
   auto *f=QApplication::focusWidget();
   if(auto *modal=QApplication::activeModalWidget()){
+   f=modalFocus(modal);
+   if(f==modal)if(auto *box=qobject_cast<QMessageBox*>(modal))if(box->defaultButton())f=box->defaultButton();
    if(auto *button=qobject_cast<QAbstractButton*>(f)){if(button->isEnabled())button->click();}
    else key(f?f:modal,Qt::Key_Return);
    return;
@@ -191,7 +220,10 @@ private:
   else if(auto *play=root->findChild<QAbstractButton*>("playGameButton"))play->setFocus(Qt::OtherFocusReason);
  }
  void page(bool settings){
-  if(QApplication::activeModalWidget())return;
+  if(auto *modal=QApplication::activeModalWidget()){
+   key(modalFocus(modal),settings?Qt::Key_Tab:Qt::Key_Backtab,settings?Qt::NoModifier:Qt::ShiftModifier);
+   return;
+  }
   for(auto *b:root->findChildren<QAbstractButton*>("navButton"))
    if(b->text()==(settings?QStringLiteral("Настройки"):QStringLiteral("Перевод"))){
     b->click();b->setFocus(Qt::OtherFocusReason);break;
@@ -218,5 +250,38 @@ bool testController(QWidget *window){
  c->press(SDL_GAMEPAD_BUTTON_DPAD_DOWN);QApplication::processEvents();
  auto *focus=QApplication::focusWidget();
  auto *frame=window->findChild<QFocusFrame*>("gamepadFocusFrame");
- return focus&&focus->isVisible()&&focus->isEnabled()&&frame&&frame->isVisible()&&frame->widget()==focus;
+ if(!focus||!focus->isVisible()||!focus->isEnabled()||!frame||!frame->isVisible()||frame->widget()!=focus)return false;
+
+ QMessageBox question(QMessageBox::Question,"Проверка","Продолжить?",QMessageBox::Yes|QMessageBox::No,window);
+ question.setWindowModality(Qt::WindowModal);question.setDefaultButton(QMessageBox::No);
+ question.show();question.activateWindow();QApplication::processEvents();
+ if(QApplication::activeModalWidget()!=&question)return false;
+ auto *no=question.button(QMessageBox::No);auto *yes=question.button(QMessageBox::Yes);
+ if(!no||!yes)return false;
+ no->setFocus(Qt::OtherFocusReason);QApplication::processEvents();
+ c->press(SDL_GAMEPAD_BUTTON_DPAD_LEFT);QApplication::processEvents();
+ if(QApplication::focusWidget()!=yes||!c->focusVisibleFor(yes))return false;
+ c->press(SDL_GAMEPAD_BUTTON_SOUTH);QApplication::processEvents();
+ if(question.isVisible()||question.result()!=QMessageBox::Yes)return false;
+
+ QMessageBox cancel(QMessageBox::Question,"Проверка","Продолжить?",QMessageBox::Yes|QMessageBox::No,window);
+ cancel.setWindowModality(Qt::WindowModal);cancel.show();cancel.activateWindow();QApplication::processEvents();
+ c->press(SDL_GAMEPAD_BUTTON_EAST);QApplication::processEvents();
+ if(cancel.isVisible())return false;
+
+ QTemporaryDir temp;if(!temp.isValid())return false;
+ const QString file=temp.filePath("translation.pak");QFile fixture(file);
+ if(!fixture.open(QIODevice::WriteOnly)||fixture.write("test")!=4)return false;
+ fixture.close();
+ QFileDialog dialog(window,"Выберите пакет",temp.path());
+ dialog.setOption(QFileDialog::DontUseNativeDialog);dialog.setFileMode(QFileDialog::ExistingFile);
+ dialog.setWindowModality(Qt::WindowModal);dialog.show();dialog.activateWindow();QApplication::processEvents();
+ auto *edit=dialog.findChild<QLineEdit*>("fileNameEdit");if(!edit)return false;
+ edit->setText(file);edit->setFocus(Qt::OtherFocusReason);QApplication::processEvents();
+ c->press(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);QApplication::processEvents();
+ auto *afterTab=QApplication::focusWidget();
+ if(!afterTab||afterTab==edit||!dialog.isAncestorOf(afterTab))return false;
+ edit->setFocus(Qt::OtherFocusReason);QApplication::processEvents();
+ c->press(SDL_GAMEPAD_BUTTON_SOUTH);QApplication::processEvents();
+ return !dialog.isVisible()&&dialog.result()==QDialog::Accepted;
 }

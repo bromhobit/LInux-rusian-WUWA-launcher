@@ -1,6 +1,6 @@
 # Maintainer: ECHO Native
 pkgname=echo-native
-pkgver=0.3.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc='Graphical Linux launcher for Wuthering Waves Russian localization'
 arch=('x86_64')
@@ -8,8 +8,8 @@ url='https://github.com/bromhobit/LInux-rusian-WUWA-launcher'
 license=('custom')
 depends=('glibc>=2.34' 'gcc-libs>=12.1' 'qt6-base>=6.12' 'sdl3>=3.2.0' 'xxhash>=0.8.4')
 makedepends=('gcc' 'pkgconf' 'python')
-source=('echo-native-source-0.3.0.tar.gz')
-sha256sums=('f58f51c705124526eb32f9975b7ff0226d063f6471928b79fcb7080021f0e99c')
+source=('echo-native-source-0.3.1.tar.gz')
+sha256sums=('61823c4d5655dfb6252956a7d37f5e86c6bdd2e966e707af18392834da45b24f')
 
 build() {
   cd "$srcdir"

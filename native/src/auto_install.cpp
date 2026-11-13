@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <xxhash.h>
+#include <functional>
 
 namespace EchoInstall {
 namespace {
@@ -487,7 +488,8 @@ Inspection inspect(const QString &appDataPath,const QString &gameRoot,const QStr
     return s;
 }
 
-Result repair(const QString &appDataPath,const QString &currentResourceVersion) {
+static Result repairImpl(const QString &appDataPath,const QString &currentResourceVersion,
+                         const std::function<void()> &afterBackup) {
     const QString journalPath=appDataPath+"/translation-install.json";const QJsonObject j=readJournal(journalPath);
     if(j.isEmpty())return {false,"Не найдена принадлежащая ECHO запись установки."};
     if(!validOwnedJournal(j))return {false,"Журнал установки повреждён или содержит неверные пути."};
@@ -495,6 +497,7 @@ Result repair(const QString &appDataPath,const QString &currentResourceVersion) 
     const QString game=j.value("gameRoot").toString(),version=j.value("resourceVersion").toString();QString error;
     if(!safeGameRoot(game,&error))return {false,error};
     if(!currentResourceVersion.isEmpty()&&currentResourceVersion!=version)return {false,"Перевод относится к другой версии ресурсов. Восстановление переноса заблокировано; сначала установите перевод для текущей версии."};
+    if(detectResourceVersion(game)!=version)return {false,"Активная версия ресурсов игры изменилась или не определена."};
     if(gameRunning(game))return {false,"Закройте игру и лаунчер перед восстановлением Mount."};
     const QString pak=j.value("pakPath").toString(),mount=game+"/Client/Saved/Resources/"+version+"/Mount/"+table;
     if(pak!=game+"/Client/Saved/Resources/"+version+"/"+QString::fromLatin1(OwnedRelative)+".pak")return {false,"Путь PAK в журнале не соответствует установке ECHO."};
@@ -505,8 +508,17 @@ Result repair(const QString &appDataPath,const QString &currentResourceVersion) 
     QByteArray updated;if(!transformMount(current,prior,&updated,false,&error))return {false,"Mount изменён неизвестным образом: "+error};
     if(updated==current)return {true,"Запись ECHO уже присутствует; файлы исправны."};
     const QString tx=transactionDir(appDataPath);if(tx.isEmpty()||!writeAtomic(tx+"/"+table,current,&error))return {false,"Не удалось сохранить резервную копию Mount: "+error};
+    if(afterBackup)afterBackup(); // Simulate concurrent changes in fixture tests.
+    if(!noSymlinkChain(pak)||!QFileInfo(pak).isFile()||sha1File(pak,nullptr)!=j.value("sha1").toString()||
+       detectResourceVersion(game)!=version||gameRunning(game)||!noSymlinkChain(mount)||
+       readAll(mount,nullptr)!=current||readJournal(journalPath)!=j)
+        return {false,"Игра или файлы перевода изменились во время восстановления. Изменения не записаны; повторите проверку."};
     if(!writeAtomic(mount,updated,&error))return {false,"Mount не изменён: "+error};
     return {true,"Запись перевода восстановлена. Резервная копия: "+tx};
+}
+
+Result repair(const QString &appDataPath,const QString &currentResourceVersion) {
+    return repairImpl(appDataPath,currentResourceVersion,{});
 }
 
 int runAutoInstallTests() {
@@ -574,6 +586,25 @@ int runAutoInstallTests() {
     const auto changedResources=inspect(app,root,"3.8.0","over",xxh);if(!changedResources.healthy||!changedResources.resourceVersionChanged||changedResources.repairable)return 1;
     QByteArray withoutEcho;if(!transformMount(patched,{},&withoutEcho,true,&err)||!put(mount,withoutEcho))return 1;
     const auto damaged=inspect(app,root,"3.7.0","over",xxh);if(!damaged.owned||damaged.healthy||!damaged.repairable)return 1;
+    // Emulate changes after the backup but before the repair commit.
+    const QByteArray concurrentMount=withoutEcho+"# concurrently changed\r\n";
+    bool mutationOk=false;
+    result=repairImpl(app,"3.7.0",[&]{mutationOk=put(mount,concurrentMount);});
+    if(!mutationOk||result.ok||readAll(mount,nullptr)!=concurrentMount||!put(mount,withoutEcho)){
+        fprintf(stderr,"FAIL: repair overwrote a concurrently changed Mount\n");return 1;
+    }
+    const QString journalPath=app+"/translation-install.json";
+    const QByteArray journalBeforeRace=readAll(journalPath,nullptr);
+    QJsonObject changedJournal=readJournal(journalPath);changedJournal.insert("channel","aniwie");
+    result=repairImpl(app,"3.7.0",[&]{mutationOk=writeJournal(journalPath,changedJournal,nullptr);});
+    if(!mutationOk||result.ok||readAll(mount,nullptr)!=withoutEcho||readJournal(journalPath)!=changedJournal||
+       !writeAtomic(journalPath,journalBeforeRace,nullptr)){
+        fprintf(stderr,"FAIL: repair ignored a concurrently changed journal\n");return 1;
+    }
+    result=repairImpl(app,"3.7.0",[&]{mutationOk=put(target,QByteArray(originalPak.size(),'!'));});
+    if(!mutationOk||result.ok||readAll(mount,nullptr)!=withoutEcho||!put(target,originalPak)){
+        fprintf(stderr,"FAIL: repair ignored a concurrently changed translation PAK\n");return 1;
+    }
     result=repair(app,"3.7.0");if(!result.ok){fprintf(stderr,"FAIL: repair: %s\n",qPrintable(result.message));return 1;}
     mf.close();if(!mf.open(QIODevice::ReadOnly)||!mf.readAll().contains(EchoInstall::sha1File(target).toLatin1())||!EchoInstall::inspect(app,root,"3.7.0","over",xxh).healthy)return 1;
     const QString pak2=temp.path()+"/translation-v2.pak";const QByteArray payload2="second synthetic translation payload";if(!put(pak2,payload2))return 1;
