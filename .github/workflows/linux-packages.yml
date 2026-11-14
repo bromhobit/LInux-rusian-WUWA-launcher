@@ -35,7 +35,7 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: '1'
           QMAKE: /usr/bin/qmake6
           LD_LIBRARY_PATH: /usr/local/lib
-          OUTPUT: ECHO-Native-0.3.2-x86_64.AppImage
+          OUTPUT: ECHO-Native-0.3.3-x86_64.AppImage
         run: |
           set -euo pipefail
           curl -fsSL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -o linuxdeploy
@@ -53,17 +53,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p deb/DEBIAN deb/opt/echo-native deb/usr/bin deb/usr/share/applications deb/usr/share/icons/hicolor/scalable/apps
-          install -m755 ECHO-Native-0.3.2-x86_64.AppImage deb/opt/echo-native/ECHO-Native.AppImage
+          install -m755 ECHO-Native-0.3.3-x86_64.AppImage deb/opt/echo-native/ECHO-Native.AppImage
           printf '#!/bin/sh\nexport APPIMAGE_EXTRACT_AND_RUN=1\nexec /opt/echo-native/ECHO-Native.AppImage "$@"\n' > deb/usr/bin/echo-native
           chmod 755 deb/usr/bin/echo-native
           install -m644 packaging/echo-native.desktop deb/usr/share/applications/echo-native.desktop
           install -m644 packaging/echo-native.svg deb/usr/share/icons/hicolor/scalable/apps/echo-native.svg
-          printf 'Package: echo-native\nVersion: 0.3.2\nArchitecture: amd64\nMaintainer: ECHO Native\nDepends: libc6 (>= 2.35), libstdc++6\nSection: utils\nPriority: optional\nDescription: Wuthering Waves Russian translation launcher\n' > deb/DEBIAN/control
-          dpkg-deb --build --root-owner-group deb echo-native_0.3.2_amd64.deb
-          dpkg-deb --info echo-native_0.3.2_amd64.deb
+          printf 'Package: echo-native\nVersion: 0.3.3\nArchitecture: amd64\nMaintainer: ECHO Native\nDepends: libc6 (>= 2.35), libstdc++6\nSection: utils\nPriority: optional\nDescription: Wuthering Waves Russian translation launcher\n' > deb/DEBIAN/control
+          dpkg-deb --build --root-owner-group deb echo-native_0.3.3_amd64.deb
+          dpkg-deb --info echo-native_0.3.3_amd64.deb
       - name: Add packages to existing release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload v0.3.2 ECHO-Native-0.3.2-x86_64.AppImage echo-native_0.3.2_amd64.deb --repo "$GITHUB_REPOSITORY"
+          gh release create v0.3.3 ECHO-Native-0.3.3-x86_64.AppImage echo-native_0.3.3_amd64.deb --target "$GITHUB_SHA" --title "ECHO Native 0.3.3" --notes "Linux x86-64: AppImage и пакет DEB. Исправлена проверка изменённого файла перевода." --repo "$GITHUB_REPOSITORY"
