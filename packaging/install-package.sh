@@ -7,6 +7,10 @@ if (( ${#pkgs[@]} == 0 )); then echo "Не найден пакет ECHO Native �
 pkg="$(printf '%s\n' "${pkgs[@]}" | sort -V | tail -n 1)"
 if [[ ! -x /usr/bin/pacman ]];then echo "Этот установщик предназначен для Arch Linux / CachyOS." >&2;exit 2;fi
 rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/echo-native.desktop" 2>/dev/null || true
+menu_file="${XDG_CONFIG_HOME:-$HOME/.config}/menus/applications-kmenuedit.menu"
+if [[ -f "$menu_file" ]]; then
+  sed -i '/<Filename>echo-native\.desktop<\/Filename>/d' "$menu_file" 2>/dev/null || true
+fi
 echo "Установка: $pkg"
 if [[ $EUID -eq 0 ]]; then
   pacman -U -- "$pkg"

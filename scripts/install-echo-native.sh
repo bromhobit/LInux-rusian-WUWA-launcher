@@ -29,6 +29,10 @@ StartupNotify=true
 EOF
   desktop_note="${XDG_DATA_HOME:-$HOME/.local/share}/applications/echo-native.desktop"
 fi
+menu_file="${XDG_CONFIG_HOME:-$HOME/.config}/menus/applications-kmenuedit.menu"
+if [[ -f "$menu_file" ]]; then
+  sed -i '/<Filename>echo-native\.desktop<\/Filename>/d' "$menu_file" 2>/dev/null || true
+fi
 if command -v kbuildsycoca6 >/dev/null 2>&1; then
   kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
 elif command -v kbuildsycoca5 >/dev/null 2>&1; then

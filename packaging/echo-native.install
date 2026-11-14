@@ -1,8 +1,24 @@
 _refresh_echo_desktop() {
   rm -f /root/.local/share/applications/echo-native.desktop 2>/dev/null || true
+  if [ -f /root/.config/menus/applications-kmenuedit.menu ]; then
+    sed -i '/<Filename>echo-native\.desktop<\/Filename>/d' /root/.config/menus/applications-kmenuedit.menu 2>/dev/null || true
+  fi
+
   for home_dir in /home/*; do
     [ -d "$home_dir" ] || continue
     rm -f "$home_dir/.local/share/applications/echo-native.desktop" 2>/dev/null || true
+    menu_file="$home_dir/.config/menus/applications-kmenuedit.menu"
+    user_name="${home_dir##*/}"
+    if [ -f "$menu_file" ]; then
+      if id "$user_name" >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
+        runuser -u "$user_name" -- sed -i '/<Filename>echo-native\.desktop<\/Filename>/d' "$menu_file" 2>/dev/null || true
+      else
+        sed -i '/<Filename>echo-native\.desktop<\/Filename>/d' "$menu_file" 2>/dev/null || true
+        if id "$user_name" >/dev/null 2>&1; then
+          chown "$user_name:$user_name" "$menu_file" 2>/dev/null || true
+        fi
+      fi
+    fi
   done
 
   if command -v update-desktop-database >/dev/null 2>&1; then
