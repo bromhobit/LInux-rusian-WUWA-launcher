@@ -41,14 +41,15 @@ jobs:
           curl -fsSL https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -o linuxdeploy
           curl -fsSL https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage -o linuxdeploy-plugin-qt
           chmod +x linuxdeploy linuxdeploy-plugin-qt
-          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/scalable/apps
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/scalable/apps AppDir/usr/plugins/platforms
+          install -m755 /usr/lib/x86_64-linux-gnu/qt6/plugins/platforms/libqoffscreen.so AppDir/usr/plugins/platforms/libqoffscreen.so
           install -m755 build/linux/echo-native AppDir/usr/bin/echo-native
           install -m644 packaging/echo-native.desktop AppDir/usr/share/applications/echo-native.desktop
           install -m644 packaging/echo-native.svg AppDir/usr/share/icons/hicolor/scalable/apps/echo-native.svg
           ./linuxdeploy --appdir AppDir --desktop-file AppDir/usr/share/applications/echo-native.desktop --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/echo-native.svg --plugin qt --output appimage
           test -f "$OUTPUT"
           QT_QPA_PLATFORM=xcb xvfb-run -a ./"$OUTPUT" --smoke-test
-          QT_QPA_PLATFORM=xcb xvfb-run -a ./"$OUTPUT" --controller-test
+          QT_QPA_PLATFORM=offscreen ./"$OUTPUT" --controller-test
       - name: Build DEB package
         run: |
           set -euo pipefail
