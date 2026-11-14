@@ -1,0 +1,41 @@
+name: Pacman package
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/pacman.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed git cmake qt6-base sdl3 xxhash pkgconf python github-cli ca-certificates
+      - uses: actions/checkout@v4
+      - name: Build and test package as non-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/echo-build
+          tar -czf /tmp/echo-build/echo-native-source-0.3.3.tar.gz native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
+          cp packaging/PKGBUILD /tmp/echo-build/PKGBUILD
+          chown -R builder:builder /tmp/echo-build
+          cd /tmp/echo-build
+          runuser -u builder -- env HOME=/home/builder makepkg --noconfirm --clean
+          cp echo-native-0.3.3-1-x86_64.pkg.tar.zst "$GITHUB_WORKSPACE/"
+      - name: Verify package installation
+        shell: bash
+        run: |
+          set -euo pipefail
+          pacman -U --noconfirm ./echo-native-0.3.3-1-x86_64.pkg.tar.zst
+          QT_QPA_PLATFORM=offscreen /usr/bin/echo-native --smoke-test
+          ldd /usr/bin/echo-native | tee /tmp/echo-ldd.txt
+          ! grep -q 'not found' /tmp/echo-ldd.txt
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload v0.3.3 echo-native-0.3.3-1-x86_64.pkg.tar.zst --repo "$GITHUB_REPOSITORY"
