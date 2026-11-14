@@ -14,7 +14,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config qt6-base-dev qt6-base-dev-tools libxxhash-dev libasound2-dev libpulse-dev libudev-dev libgl1-mesa-dev libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev libwayland-dev libxkbcommon-dev libfuse2 patchelf
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config qt6-base-dev qt6-base-dev-tools libxxhash-dev libasound2-dev libpulse-dev libudev-dev libgl1-mesa-dev libx11-dev libxext-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev libwayland-dev libxkbcommon-dev libfuse2 patchelf xvfb xauth
       - name: Build SDL3
         run: |
           curl -fsSL https://github.com/libsdl-org/SDL/releases/download/release-3.2.22/SDL3-3.2.22.tar.gz -o /tmp/sdl.tar.gz
@@ -47,8 +47,8 @@ jobs:
           install -m644 packaging/echo-native.svg AppDir/usr/share/icons/hicolor/scalable/apps/echo-native.svg
           ./linuxdeploy --appdir AppDir --desktop-file AppDir/usr/share/applications/echo-native.desktop --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/echo-native.svg --plugin qt --output appimage
           test -f "$OUTPUT"
-          QT_QPA_PLATFORM=offscreen ./"$OUTPUT" --smoke-test
-          QT_QPA_PLATFORM=offscreen ./"$OUTPUT" --controller-test
+          QT_QPA_PLATFORM=xcb xvfb-run -a ./"$OUTPUT" --smoke-test
+          QT_QPA_PLATFORM=xcb xvfb-run -a ./"$OUTPUT" --controller-test
       - name: Build DEB package
         run: |
           set -euo pipefail
