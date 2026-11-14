@@ -129,7 +129,10 @@ QString sha1File(const QString &path,QString *error) {
 }
 
 namespace {
-// Always hash the current file: timestamps may not change on rapid writes.\nQString inspectionSha1(const QString &path,QString *error) {\n    return sha1File(path,error);\n}
+// Always hash the current file: timestamps may not change on rapid writes.
+QString inspectionSha1(const QString &path,QString *error) {
+    return sha1File(path,error);
+}
 }
 
 QString detectResourceVersion(const QString &gameRoot) {
