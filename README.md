@@ -17,16 +17,17 @@ ECHO Native помогает установить, обновить и восс�
 
 ## Установка
 
-Для **Arch Linux** и **CachyOS** доступен готовый пакет.
+В [релизе 0.3.3](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/releases/tag/v0.3.3) доступны пакеты для **Linux x86-64**:
 
-1. Скачайте [пакет echo-native 0.3.2](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/blob/main/release/echo-native-0.3.2-1-x86_64.pkg.tar.zst).
-2. Установите пакет:
+- **AppImage** — для разных дистрибутивов, включая SteamOS. Скачайте файл, разрешите его выполнение и запустите:
+  ```bash
+  chmod +x ECHO-Native-0.3.3-x86_64.AppImage
+  ./ECHO-Native-0.3.3-x86_64.AppImage
+  ```
+  Для обычного запуска AppImage нужна поддержка FUSE; если её нет, можно запустить с `APPIMAGE_EXTRACT_AND_RUN=1`.
+- **DEB** — для Debian/Ubuntu: скачайте `echo-native_0.3.3_amd64.deb` и установите через менеджер пакетов либо командой `sudo apt install ./echo-native_0.3.3_amd64.deb`. Пакет содержит AppImage и запускает его с извлечением.
 
-```bash
-sudo pacman -U ./echo-native-0.3.2-1-x86_64.pkg.tar.zst
-```
-
-После установки запустите **ECHO Native** из меню приложений.
+Для Arch Linux и CachyOS также доступен [пакет предыдущей версии 0.3.2](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/releases/tag/v0.3.2). Пакеты 0.3.3 прошли автоматические проверки; работа со всеми дистрибутивами и реальной игрой ещё не проверена.
 
 ## Проверка файлов перевода
 
@@ -48,7 +49,7 @@ Steam-версия 3.8 сначала запускает официальный 
 
 ## Требования
 
-- Linux x86_64 (Arch Linux / CachyOS для готового пакета). На других дистрибутивах соберите приложение из исходников с установленными зависимостями.
+- Linux x86-64. AppImage рассчитан на совместимые дистрибутивы; DEB — на Debian/Ubuntu с glibc 2.35 или новее.
 - Установленная Steam-версия Wuthering Waves.
 - Qt 6, SDL3 и xxhash — зависимости автоматически разрешаются пакетным менеджером.
 
@@ -67,7 +68,7 @@ bash scripts/build-arch-package.sh
 
 ## Распространение
 
-Готовый пакет и контрольные суммы находятся в каталоге [release](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/tree/main/release).
+Готовые пакеты находятся в разделе [Releases](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/releases).
 
 ## Важно
 
