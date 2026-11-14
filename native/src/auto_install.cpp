@@ -129,30 +129,7 @@ QString sha1File(const QString &path,QString *error) {
 }
 
 namespace {
-// Status refresh runs frequently. Cache only the most recent verified PAK and
-// invalidate on inode, size or nanosecond mtime/ctime changes. Mutating
-// operations still calculate the hash again immediately before writing.
-QString inspectionSha1(const QString &path,QString *error) {
-    struct stat before{};
-    const QByteArray native=QFile::encodeName(path);
-    if(::stat(native.constData(),&before)!=0)return sha1File(path,error);
-    static QMutex mutex;
-    static QString cachedPath,cachedHash;
-    static struct stat cached{};
-    QMutexLocker lock(&mutex);
-    auto same=[](const struct stat &a,const struct stat &b) {
-        return a.st_dev==b.st_dev&&a.st_ino==b.st_ino&&a.st_size==b.st_size&&
-               a.st_mtim.tv_sec==b.st_mtim.tv_sec&&a.st_mtim.tv_nsec==b.st_mtim.tv_nsec&&
-               a.st_ctim.tv_sec==b.st_ctim.tv_sec&&a.st_ctim.tv_nsec==b.st_ctim.tv_nsec;
-    };
-    if(cachedPath==path&&!cachedHash.isEmpty()&&same(before,cached))return cachedHash;
-    const QString hash=sha1File(path,error);
-    struct stat after{};
-    if(!hash.isEmpty()&&::stat(native.constData(),&after)==0&&same(before,after)){
-        cachedPath=path;cachedHash=hash;cached=after;
-    } else {cachedPath.clear();cachedHash.clear();}
-    return hash;
-}
+// Always hash the current file: timestamps may not change on rapid writes.\nQString inspectionSha1(const QString &path,QString *error) {\n    return sha1File(path,error);\n}
 }
 
 QString detectResourceVersion(const QString &gameRoot) {
