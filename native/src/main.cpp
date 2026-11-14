@@ -490,11 +490,175 @@ bool isSupportedStandaloneLauncher(const QString &path) {
 QString steamExecutable() {
     const QString configured = qEnvironmentVariable("STEAM_EXECUTABLE");
     if (!configured.isEmpty() && QFileInfo(configured).isExecutable()) return QFileInfo(configured).absoluteFilePath();
+    if (QFileInfo("/usr/bin/steam").isExecutable()) return "/usr/bin/steam";
     return QStandardPaths::findExecutable("steam");
 }
 
 QStringList steamLaunchArguments() { return {"-applaunch", WutheringAppId}; }
 
+QProcessEnvironment sanitizedSteamEnvironment(QProcessEnvironment env = QProcessEnvironment::systemEnvironment()) {
+    const bool fromSteam = !env.value("SteamAppId").isEmpty() || !env.value("SteamGameId").isEmpty() ||
+                           !env.value("STEAM_COMPAT_APP_ID").isEmpty() || !env.value("SteamClientLaunch").isEmpty();
+    const char *const stripVars[] = {
+        "SteamAppId", "SteamGameId", "SteamOverlayGameId",
+        "STEAM_COMPAT_APP_ID", "STEAM_COMPAT_DATA_PATH",
+        "STEAM_COMPAT_CLIENT_INSTALL_PATH", "SteamClientLaunch"
+    };
+    for (const char *name : stripVars) env.remove(QString::fromLatin1(name));
+    if(fromSteam)env.remove("LD_PRELOAD");
+    return env;
+}
+
+struct SteamLaunchOptionsCheck {
+    bool ok{true};
+    QString wrapperPath;
+    QString error;
+};
+
+QString extractVdfAppLaunchOptions(const QString &contents, const QString &appId) {
+    const QRegularExpression appRe("\\\"" + QRegularExpression::escape(appId) + "\\\"\\s*\\{");
+    QRegularExpressionMatchIterator it = appRe.globalMatch(contents);
+    QString result; bool found=false;
+    while (it.hasNext()) {
+        const auto match = it.next();
+        int pos = match.capturedEnd();
+        int depth = 1;
+        bool inQuotes = false;
+        int blockEnd = -1;
+        for (int i = pos; i < contents.size(); ++i) {
+            const QChar ch = contents.at(i);
+            if (ch == '\\' && inQuotes && i + 1 < contents.size()) { ++i; continue; }
+            if (ch == '"') { inQuotes = !inQuotes; continue; }
+            if (!inQuotes) {
+                if (ch == '{') ++depth;
+                else if (ch == '}' && --depth == 0) { blockEnd = i; break; }
+            }
+        }
+        if (blockEnd > pos) {
+            const QString block = contents.mid(pos, blockEnd - pos);
+            const QRegularExpression optRe("\\\"LaunchOptions\\\"\\s+\\\"((?:[^\\\"\\\\]|\\\\.)*)\\\"");
+            auto opts=optRe.globalMatch(block);
+            if (opts.hasNext()) {
+                const auto optMatch=opts.next();
+                if(found||opts.hasNext())return {};
+                QString val = optMatch.captured(1);
+                val.replace("\\\\", "\\");
+                val.replace("\\\"", "\"");
+                result=val;found=true;
+            }
+        }
+    }
+    return result;
+}
+
+// Validate only a single, literal wrapper path followed by %command%.  Shell
+// pipelines, variables, arguments and multi-account configs belong to Steam.
+QString simpleWrapperFromLaunchOptions(const QString &options,const QString &homeDir=QDir::homePath()) {
+    if(options.contains('\n')||options.contains('\r'))return {};
+    static const QRegularExpression suffix(R"(\s+%command%\s*$)",QRegularExpression::CaseInsensitiveOption);
+    const auto match=suffix.match(options);
+    if(!match.hasMatch())return {};
+    QString path=options.left(match.capturedStart()).trimmed();
+    const bool quoted=path.size()>=2&&((path.front()=='"'&&path.back()=='"')||(path.front()=='\''&&path.back()=='\''));
+    if(quoted)
+        path=path.mid(1,path.size()-2);
+    else if(path.contains(QRegularExpression(R"(\s)")))return {};
+    // Reject expansions, quoting tricks and shell operators even inside quotes.
+    static const QRegularExpression shellMeta(R"meta([\\$`;&|<>(){}*?\[\]"'])meta");
+    if(path.isEmpty()||shellMeta.match(path).hasMatch())return {};
+    if(path.startsWith("~/"))return quoted?QString():QDir::cleanPath(homeDir+path.mid(1));
+    return QDir::isAbsolutePath(path)?QDir::cleanPath(path):QString();
+}
+
+// The loginusers file uses SteamID64 while userdata uses 32-bit account IDs.
+// Only choose a user if the file unambiguously identifies one.
+QString steamLoginAccount(const QString &contents) {
+    static const QRegularExpression accountRe(R"re("([0-9]{17})"\s*\{)re");
+    static const QRegularExpression recentRe(R"re("MostRecent"\s+"([^"]*)")re");
+    constexpr quint64 SteamIdBase=76561197960265728ULL;
+    QStringList accounts,recent;
+    auto matches=accountRe.globalMatch(contents);
+    while(matches.hasNext()){
+        const auto match=matches.next();
+        bool valid=false;
+        const quint64 id=match.captured(1).toULongLong(&valid);
+        if(!valid||id<=SteamIdBase||id-SteamIdBase>4294967295ULL)return {};
+        int depth=1,end=-1;
+        bool inQuotes=false;
+        for(int i=match.capturedEnd();i<contents.size();++i){
+            const QChar ch=contents.at(i);
+            if(ch=='\\'&&inQuotes&&i+1<contents.size()){++i;continue;}
+            if(ch=='"'){inQuotes=!inQuotes;continue;}
+            if(!inQuotes){if(ch=='{')++depth;else if(ch=='}'&&--depth==0){end=i;break;}}
+        }
+        if(end<0)return {};
+        const QString account=QString::number(id-SteamIdBase);
+        if(accounts.contains(account))return {};
+        accounts<<account;
+        const QString block=contents.mid(match.capturedEnd(),end-match.capturedEnd());
+        auto flags=recentRe.globalMatch(block);
+        if(flags.hasNext()){
+            const auto flag=flags.next();
+            if(flags.hasNext())return {};
+            if(flag.captured(1)!="0"&&flag.captured(1)!="1")return {};
+            if(flag.captured(1)=="1")recent<<account;
+        }
+    }
+    if(accounts.size()==1)return accounts.first();
+    if(recent.size()==1)return recent.first();
+    return {};
+}
+
+SteamLaunchOptionsCheck inspectSteamLaunchOptions(const QStringList &roots,const QString &appId=WutheringAppId,
+                                                  const QString &homeDir=QDir::homePath()) {
+    QSet<QString> configs,loginFiles;
+    QHash<QString,QSet<QString>> byAccount;
+    for(const QString &root:roots){
+        const QFileInfo login(root+"/config/loginusers.vdf");
+        if(login.exists()){
+            const QString canonical=login.canonicalFilePath();
+            if(!login.isFile()||canonical.isEmpty())return {};
+            loginFiles.insert(canonical);
+        }
+        QDir userdata(root+"/userdata");
+        for(const QString &uid:userdata.entryList(QDir::Dirs|QDir::NoDotAndDotDot)){
+            const QFileInfo file(userdata.filePath(uid+"/config/localconfig.vdf"));
+            if(file.isFile()){
+                const QString canonical=file.canonicalFilePath();
+                if(!canonical.isEmpty()){configs.insert(canonical);byAccount[uid].insert(canonical);}
+            }
+        }
+    }
+    QString chosen;
+    if(loginFiles.isEmpty()){
+        if(configs.size()!=1)return {};
+        chosen=*configs.cbegin();
+    }else{
+        QSet<QString> active;
+        for(const QString &path:loginFiles){
+            QFile login(path);
+            if(!login.open(QIODevice::ReadOnly|QIODevice::Text))return {};
+            const QString account=steamLoginAccount(QString::fromUtf8(login.readAll()));
+            if(account.isEmpty())return {};
+            active.insert(account);
+        }
+        if(active.size()!=1)return {};
+        const auto matching=byAccount.value(*active.cbegin());
+        if(matching.size()!=1)return {};
+        chosen=*matching.cbegin();
+    }
+    QFile file(chosen);
+    if(!file.open(QIODevice::ReadOnly|QIODevice::Text))return {};
+    const QString options=extractVdfAppLaunchOptions(QString::fromUtf8(file.readAll()),appId);
+    const QString wrapper=simpleWrapperFromLaunchOptions(options,homeDir);
+    if(wrapper.isEmpty())return {};
+    const QFileInfo info(wrapper);
+    if(info.isFile()&&info.isExecutable())return {true,wrapper,{}};
+    const QString why=info.exists()
+        ? QString("Скрипт запуска Steam недоступен или не является исполняемым: %1\n\nПроверьте параметры запуска Wuthering Waves в Steam.").arg(wrapper)
+        : QString("Не найден скрипт запуска Steam: %1\n\nВосстановите его или измените параметры запуска Wuthering Waves в Steam.").arg(wrapper);
+    return {false,wrapper,why};
+}
 bool launchStandaloneProton(QProcess *process, const QString &proton, const QString &launcher,
                             const QString &compat, const QString &clientRoot, QString *error) {
     if (isShippingExecutable(launcher)) {
@@ -1107,9 +1271,27 @@ private:
                 }
             }
             logLine("\n=== "+QDateTime::currentDateTime().toString(Qt::ISODate)+" ===");logLine("Launch mode: Steam-managed");logLine("Steam: "+steam);logLine("AppID: 3513350");logLine("Install: "+installs.first().installDir);logLine("Client: "+installs.first().gameDir);
+            const auto launchCheck = inspectSteamLaunchOptions(steamRoots(), WutheringAppId);
+            if (!launchCheck.ok) {
+                logLine("Launch options warning: " + launchCheck.error);
+                channelStatus->setText("Возможно, есть проблема с параметрами запуска Steam. "+launchCheck.error);
+            }
             QString error;
-            if(!QProcess::startDetached(steam,steamLaunchArguments(),QString(),nullptr)){error="Не удалось передать запуск Steam. Убедитесь, что клиент Steam запущен.";logLine(error);QMessageBox::critical(this,"Ошибка запуска",error);return;}
-            statusLabel->setText("Команда запуска передана Steam (AppID 3513350). Steam управляет Proton и compatdata.");logLine("Steam launch request submitted.");refreshDiagnostics();return;
+            QProcess process;
+            process.setProgram(steam);
+            process.setArguments(steamLaunchArguments());
+            process.setProcessEnvironment(sanitizedSteamEnvironment());
+            qint64 pid = 0;
+            if (!process.startDetached(&pid)) {
+                error = "Не удалось передать запуск Steam. Убедитесь, что клиент Steam запущен.";
+                logLine(error);
+                QMessageBox::critical(this, "Ошибка запуска", error);
+                return;
+            }
+            statusLabel->setText(launchCheck.ok?"Запрос запуска передан Steam (AppID 3513350).":"Запрос передан Steam. Проверьте предупреждение о параметрах запуска.");
+            logLine(QString("Steam launch request submitted (PID: %1).").arg(pid));
+            refreshDiagnostics();
+            return;
         }
     }
     QString recentLog()const{QFile f(logPath);if(!f.open(QIODevice::ReadOnly|QIODevice::Text))return"(лог запуска пока не создан)";auto s=QString::fromUtf8(f.readAll());if(s.size()>12000)s=s.right(12000);return s;}
@@ -1301,7 +1483,77 @@ int runLaunchTests() {
     if (!isSupportedStandaloneLauncher(game+"/launcher.exe") || isSupportedStandaloneLauncher(shipping)) { fprintf(stderr,"FAIL: standalone launcher validation failed\n"); return 1; }
     if (steamLaunchArguments()!=QStringList({"-applaunch","3513350"})) { fprintf(stderr,"FAIL: Steam launch arguments mismatch\n"); return 1; }
     if (!launchStandaloneProton(&process,proton,game+"/launcher.exe",compat,library,&error) || process.program()!=proton || process.arguments()!=QStringList({"run",game+"/launcher.exe"}) || process.state()!=QProcess::NotRunning) { fprintf(stderr,"FAIL: standalone command preparation failed\n"); return 1; }
-    fprintf(stdout,"PASS: Steam discovery, nested client, stale resources, ambiguous clients, direct Proton command and quality fallback; no game process started\n");
+    // Only literal, direct wrapper commands can cause a preflight block.
+    if(simpleWrapperFromLaunchOptions("~/proton-launch %command%","/fake/home")!="/fake/home/proton-launch"||
+       simpleWrapperFromLaunchOptions("\"/path with spaces/wrapper\" %command%","/fake/home")!="/path with spaces/wrapper"){
+        fprintf(stderr,"FAIL: literal wrapper parsing\n");return 1;
+    }
+    for(const QString &complex:QStringList{"%command%","\"~/wrapper\" %command%",
+        "VAR=1 /missing/wrapper %command%","/missing/wrapper --arg %command%",
+        "/missing/wrapper %command% || echo fallback","/missing/wrapper; echo x %command%",
+        "$HOME/wrapper %command%","gamemoderun /missing/wrapper %command%"}){
+        if(!simpleWrapperFromLaunchOptions(complex,"/fake/home").isEmpty()){
+            fprintf(stderr,"FAIL: shell command must not be interpreted as a simple path\n");return 1;
+        }
+    }
+    const QString mockVdf="\"3513350\" { \"LaunchOptions\" \"/nonexistent/wrapper %command%\" }";
+    if(extractVdfAppLaunchOptions(mockVdf,"3513350")!="/nonexistent/wrapper %command%"||
+       !extractVdfAppLaunchOptions(mockVdf+mockVdf,"3513350").isEmpty()){
+        fprintf(stderr,"FAIL: LaunchOptions VDF parsing or ambiguity\n");return 1;
+    }
+    const QString testSteam=root+"/steam-test",testHome=root+"/home-test";
+    const QString configOne=testSteam+"/userdata/1/config/localconfig.vdf";
+    const QString configTwo=testSteam+"/userdata/2/config/localconfig.vdf";
+    const QString loginFile=testSteam+"/config/loginusers.vdf";
+    const QString trash=testHome+"/.local/share/Trash/files/proton-launch";
+    if(!QDir().mkpath(QFileInfo(configOne).absolutePath())||
+       !QDir().mkpath(QFileInfo(configTwo).absolutePath())||
+       !QDir().mkpath(QFileInfo(loginFile).absolutePath())||
+       !QDir().mkpath(QFileInfo(trash).absolutePath())||
+       !writeBytes(trash,"old deleted script")||
+       !writeBytes(configOne,"\"3513350\" { \"LaunchOptions\" \"~/proton-launch %command%\" }")){
+        fprintf(stderr,"FAIL: Steam account test setup\n");return 1;
+    }
+    const auto missing=inspectSteamLaunchOptions({testSteam,testSteam},WutheringAppId,testHome);
+    if(missing.ok||missing.wrapperPath!=testHome+"/proton-launch"||QFileInfo::exists(testHome+"/proton-launch")){
+        fprintf(stderr,"FAIL: missing wrapper must be reported without restoring the trash file\n");return 1;
+    }
+    if(!writeBytes(configTwo,"\"3513350\" { \"LaunchOptions\" \"/missing/other %command%\" }")||
+       !inspectSteamLaunchOptions({testSteam},WutheringAppId,testHome).ok){
+        fprintf(stderr,"FAIL: multiple profiles without login information must not block\n");return 1;
+    }
+    const QByteArray loginOne="\"users\" { \"76561197960265729\" { \"AccountName\" \"first\" } }";
+    if(!writeBytes(loginFile,loginOne)||!writeBytes(configOne,"\"3513350\" { }")||
+       !inspectSteamLaunchOptions({testSteam},WutheringAppId,testHome).ok){
+        fprintf(stderr,"FAIL: empty selected profile must not inspect another profile\n");return 1;
+    }
+    const QByteArray loginRecentOne="\"users\" { \"76561197960265729\" { \"MostRecent\" \"1\" } \"76561197960265730\" { \"MostRecent\" \"0\" } }";
+    if(!writeBytes(configOne,"\"3513350\" { \"LaunchOptions\" \"~/proton-launch %command%\" }")||
+       !writeBytes(loginFile,loginRecentOne)||
+       inspectSteamLaunchOptions({testSteam},WutheringAppId,testHome).ok){
+        fprintf(stderr,"FAIL: active profile missing wrapper must be reported\n");return 1;
+    }
+    const QByteArray loginAmbiguous="\"users\" { \"76561197960265729\" { } \"76561197960265730\" { } }";
+    if(!writeBytes(loginFile,loginAmbiguous)||
+       !inspectSteamLaunchOptions({testSteam},WutheringAppId,testHome).ok||
+       QFileInfo::exists(testHome+"/proton-launch")){
+        fprintf(stderr,"FAIL: ambiguous profile must not block or restore files\n");return 1;
+    }
+    QProcessEnvironment desktop;
+    desktop.insert("LD_PRELOAD","/tmp/test-overlay.so");
+    desktop.insert("OTHER_SETTING","preserved");
+    const auto desktopEnv=sanitizedSteamEnvironment(desktop);
+    if(desktopEnv.value("LD_PRELOAD")!="/tmp/test-overlay.so"||desktopEnv.value("OTHER_SETTING")!="preserved"){
+        fprintf(stderr,"FAIL: desktop overlay environment was not preserved\n");return 1;
+    }
+    for(const QString &marker:QStringList{"SteamAppId","SteamGameId","STEAM_COMPAT_APP_ID","SteamClientLaunch"}){
+        auto steamEnv=desktop;steamEnv.insert(marker,"1");
+        const auto cleaned=sanitizedSteamEnvironment(steamEnv);
+        if(cleaned.contains(marker)||cleaned.contains("LD_PRELOAD")||cleaned.value("OTHER_SETTING")!="preserved"){
+            fprintf(stderr,"FAIL: Steam launch environment was not cleaned correctly\n");return 1;
+        }
+    }
+    fprintf(stdout,"PASS: Steam discovery, nested client, stale resources, ambiguous clients, direct Proton command and quality fallback, LaunchOptions validation; no game process started\n");
     return 0;
 }
 }

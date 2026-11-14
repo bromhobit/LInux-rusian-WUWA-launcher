@@ -11,6 +11,7 @@ ECHO Native помогает установить, обновить и восс�
 - Проверка версии игры и доступности обновлений перевода.
 - Автоматическое обнаружение установки Wuthering Waves в Steam.
 - Запуск игры через Steam и управление геймпадом.
+- Проверка простой обёртки из параметров запуска Steam, когда активный аккаунт можно определить однозначно.
 - Проверка манифеста при запуске и каждые 30 минут; новые совместимые пакеты загружаются в кеш и проверяются по XXH64.
 - Резервное копирование, проверка и восстановление файлов подключения перевода.
 
@@ -18,11 +19,11 @@ ECHO Native помогает установить, обновить и восс�
 
 Для **Arch Linux** и **CachyOS** доступен готовый пакет.
 
-1. Скачайте [пакет echo-native 0.3.1](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/blob/main/release/echo-native-0.3.1-1-x86_64.pkg.tar.zst).
+1. Скачайте [пакет echo-native 0.3.2](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/blob/main/release/echo-native-0.3.2-1-x86_64.pkg.tar.zst).
 2. Установите пакет:
 
 ```bash
-sudo pacman -U ./echo-native-0.3.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./echo-native-0.3.2-1-x86_64.pkg.tar.zst
 ```
 
 После установки запустите **ECHO Native** из меню приложений.
