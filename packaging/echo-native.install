@@ -1,0 +1,39 @@
+_refresh_echo_desktop() {
+  rm -f /root/.local/share/applications/echo-native.desktop 2>/dev/null || true
+  for home_dir in /home/*; do
+    [ -d "$home_dir" ] || continue
+    rm -f "$home_dir/.local/share/applications/echo-native.desktop" 2>/dev/null || true
+  done
+
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor 2>/dev/null || true
+  fi
+
+  for home_dir in /home/*; do
+    [ -d "$home_dir" ] || continue
+    user_name="${home_dir##*/}"
+    id "$user_name" >/dev/null 2>&1 || continue
+    if command -v runuser >/dev/null 2>&1; then
+      if command -v kbuildsycoca6 >/dev/null 2>&1; then
+        runuser -u "$user_name" -- env HOME="$home_dir" kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+      elif command -v kbuildsycoca5 >/dev/null 2>&1; then
+        runuser -u "$user_name" -- env HOME="$home_dir" kbuildsycoca5 --noincremental >/dev/null 2>&1 || true
+      fi
+    fi
+  done
+}
+
+post_install() {
+  _refresh_echo_desktop
+}
+
+post_upgrade() {
+  _refresh_echo_desktop
+}
+
+post_remove() {
+  _refresh_echo_desktop
+}

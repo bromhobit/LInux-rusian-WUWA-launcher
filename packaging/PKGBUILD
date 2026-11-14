@@ -8,6 +8,7 @@ url='https://github.com/bromhobit/LInux-rusian-WUWA-launcher'
 license=('custom')
 depends=('glibc>=2.34' 'gcc-libs>=12.1' 'qt6-base>=6.12' 'sdl3>=3.2.0' 'xxhash>=0.8.4')
 makedepends=('cmake' 'pkgconf' 'gcc' 'make' 'python' 'binutils')
+install=echo-native.install
 source=("echo-native-source-${pkgver}.tar.gz")
 sha256sums=('SKIP')
 

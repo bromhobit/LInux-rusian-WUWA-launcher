@@ -59,6 +59,9 @@ jobs:
           chmod 755 deb/usr/bin/echo-native
           install -m644 packaging/echo-native.desktop deb/usr/share/applications/echo-native.desktop
           install -m644 packaging/echo-native.svg deb/usr/share/icons/hicolor/scalable/apps/echo-native.svg
+          cp packaging/echo-native.install deb/DEBIAN/postinst
+          printf '\n_refresh_echo_desktop\n' >> deb/DEBIAN/postinst
+          chmod 755 deb/DEBIAN/postinst
           printf 'Package: echo-native\nVersion: 0.3.3\nArchitecture: amd64\nMaintainer: ECHO Native\nDepends: libc6 (>= 2.35), libstdc++6\nSection: utils\nPriority: optional\nDescription: Wuthering Waves Russian translation launcher\n' > deb/DEBIAN/control
           dpkg-deb --build --root-owner-group deb echo-native_0.3.3_amd64.deb
           dpkg-deb --info echo-native_0.3.3_amd64.deb
@@ -67,4 +70,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release create v0.3.3 ECHO-Native-0.3.3-x86_64.AppImage echo-native_0.3.3_amd64.deb --target "$GITHUB_SHA" --title "ECHO Native 0.3.3" --notes "Linux x86-64: AppImage и пакет DEB. Исправлена проверка изменённого файла перевода." --repo "$GITHUB_REPOSITORY"
+          if gh release view v0.3.3 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.3.3 ECHO-Native-0.3.3-x86_64.AppImage echo-native_0.3.3_amd64.deb --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create v0.3.3 ECHO-Native-0.3.3-x86_64.AppImage echo-native_0.3.3_amd64.deb --target "$GITHUB_SHA" --title "ECHO Native 0.3.3" --notes "Linux x86-64: AppImage и пакет DEB. Исправлена проверка изменённого файла перевода." --repo "$GITHUB_REPOSITORY"
+          fi
