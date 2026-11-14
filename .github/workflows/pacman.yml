@@ -34,12 +34,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /home/builder/.local/share/applications
+          mkdir -p /home/builder/.local/share/applications /home/builder/.config/menus
           printf '[Desktop Entry]\nType=Application\nName=ECHO Native\nExec="/home/builder/.local/share/echo-native/bin/echo-native"\n' > /home/builder/.local/share/applications/echo-native.desktop
-          chown -R builder:builder /home/builder/.local
+          printf '<Menu>\n <Menu>\n  <Name>Games</Name>\n  <Exclude>\n   <Filename>olympus.desktop</Filename>\n   <Filename>echo-native.desktop</Filename>\n  </Exclude>\n </Menu>\n <Menu>\n  <Name>.hidden</Name>\n  <Include>\n   <Filename>echo-native.desktop</Filename>\n  </Include>\n </Menu>\n</Menu>\n' > /home/builder/.config/menus/applications-kmenuedit.menu
+          chown -R builder:builder /home/builder/.local /home/builder/.config
           pacman -U --noconfirm ./echo-native-0.3.3-1-x86_64.pkg.tar.zst
           test ! -e /home/builder/.local/share/applications/echo-native.desktop
+          ! grep -q 'echo-native.desktop' /home/builder/.config/menus/applications-kmenuedit.menu
+          grep -q 'olympus.desktop' /home/builder/.config/menus/applications-kmenuedit.menu
+          test "$(stat -c '%U:%G' /home/builder/.config/menus/applications-kmenuedit.menu)" = "builder:builder"
           test -f /usr/share/applications/echo-native.desktop
+          grep -q '^Categories=Game;$' /usr/share/applications/echo-native.desktop
           QT_QPA_PLATFORM=offscreen /usr/bin/echo-native --smoke-test
           ldd /usr/bin/echo-native | tee /tmp/echo-ldd.txt
           ! grep -q 'not found' /tmp/echo-ldd.txt
