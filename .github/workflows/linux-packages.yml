@@ -2,7 +2,7 @@ name: ECHO Linux packages
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/linux-packages.yml']
+    paths: ['.github/workflows/linux-packages.yml', 'native/**']
   workflow_dispatch:
 permissions:
   contents: write
