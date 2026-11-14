@@ -2,7 +2,9 @@ name: Pacman package
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/pacman.yml']
+    paths:
+      - '.github/workflows/pacman.yml'
+      - 'packaging/**'
   workflow_dispatch:
 permissions:
   contents: write
@@ -23,6 +25,7 @@ jobs:
           mkdir -p /tmp/echo-build
           tar -czf /tmp/echo-build/echo-native-source-0.3.3.tar.gz native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
           cp packaging/PKGBUILD /tmp/echo-build/PKGBUILD
+          cp packaging/echo-native.install /tmp/echo-build/echo-native.install
           chown -R builder:builder /tmp/echo-build
           cd /tmp/echo-build
           runuser -u builder -- env HOME=/home/builder makepkg --noconfirm --clean
@@ -31,11 +34,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p /home/builder/.local/share/applications
+          printf '[Desktop Entry]\nType=Application\nName=ECHO Native\nExec="/home/builder/.local/share/echo-native/bin/echo-native"\n' > /home/builder/.local/share/applications/echo-native.desktop
+          chown -R builder:builder /home/builder/.local
           pacman -U --noconfirm ./echo-native-0.3.3-1-x86_64.pkg.tar.zst
+          test ! -e /home/builder/.local/share/applications/echo-native.desktop
+          test -f /usr/share/applications/echo-native.desktop
           QT_QPA_PLATFORM=offscreen /usr/bin/echo-native --smoke-test
           ldd /usr/bin/echo-native | tee /tmp/echo-ldd.txt
           ! grep -q 'not found' /tmp/echo-ldd.txt
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload v0.3.3 echo-native-0.3.3-1-x86_64.pkg.tar.zst --repo "$GITHUB_REPOSITORY"
+        run: gh release upload v0.3.3 echo-native-0.3.3-1-x86_64.pkg.tar.zst --repo "$GITHUB_REPOSITORY" --clobber
