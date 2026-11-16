@@ -23,13 +23,13 @@ jobs:
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           mkdir -p /tmp/echo-build
-          tar -czf /tmp/echo-build/echo-native-source-0.3.3.tar.gz native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
+          tar -czf /tmp/echo-build/echo-native-source-0.3.4.tar.gz native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
           cp packaging/PKGBUILD /tmp/echo-build/PKGBUILD
           cp packaging/echo-native.install /tmp/echo-build/echo-native.install
           chown -R builder:builder /tmp/echo-build
           cd /tmp/echo-build
           runuser -u builder -- env HOME=/home/builder makepkg --noconfirm --clean
-          cp echo-native-0.3.3-1-x86_64.pkg.tar.zst "$GITHUB_WORKSPACE/"
+          cp echo-native-0.3.4-1-x86_64.pkg.tar.zst "$GITHUB_WORKSPACE/"
       - name: Verify package installation
         shell: bash
         run: |
@@ -38,7 +38,7 @@ jobs:
           printf '[Desktop Entry]\nType=Application\nName=ECHO Native\nExec="/home/builder/.local/share/echo-native/bin/echo-native"\n' > /home/builder/.local/share/applications/echo-native.desktop
           printf '<Menu>\n <Menu>\n  <Name>Games</Name>\n  <Exclude>\n   <Filename>olympus.desktop</Filename>\n   <Filename>echo-native.desktop</Filename>\n  </Exclude>\n </Menu>\n <Menu>\n  <Name>.hidden</Name>\n  <Include>\n   <Filename>echo-native.desktop</Filename>\n  </Include>\n </Menu>\n</Menu>\n' > /home/builder/.config/menus/applications-kmenuedit.menu
           chown -R builder:builder /home/builder/.local /home/builder/.config
-          pacman -U --noconfirm ./echo-native-0.3.3-1-x86_64.pkg.tar.zst
+          pacman -U --noconfirm ./echo-native-0.3.4-1-x86_64.pkg.tar.zst
           test ! -e /home/builder/.local/share/applications/echo-native.desktop
           ! grep -q 'echo-native.desktop' /home/builder/.config/menus/applications-kmenuedit.menu
           grep -q 'olympus.desktop' /home/builder/.config/menus/applications-kmenuedit.menu
@@ -51,4 +51,16 @@ jobs:
       - name: Upload to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload v0.3.3 echo-native-0.3.3-1-x86_64.pkg.tar.zst --repo "$GITHUB_REPOSITORY" --clobber
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..40}; do
+            if gh release view v0.3.4 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload v0.3.4 echo-native-0.3.4-1-x86_64.pkg.tar.zst --repo "$GITHUB_REPOSITORY" --clobber
+              exit 0
+            fi
+            sleep 30
+          done
+          echo 'Release v0.3.4 was not created in time' >&2
+          exit 1
+

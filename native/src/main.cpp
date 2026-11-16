@@ -3,6 +3,7 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -496,6 +497,22 @@ QString steamExecutable() {
 
 QStringList steamLaunchArguments() { return {"-applaunch", WutheringAppId}; }
 
+// Steam evaluates launch options as a shell command. Always quote the entire
+// path, including spaces and apostrophes; AppImages must use their stable path
+// rather than the transient mounted executable.
+QString steamWrapperCommand(const QString &path) {
+    if(path.isEmpty() || path.contains('\n') || path.contains('\r') || path.contains(QChar::Null)) return {};
+    QString quoted=path;
+    quoted.replace("'", "'\\''");
+    return "'"+quoted+"' --steam-wrap %command%";
+}
+
+QString installedSteamWrapperCommand() {
+    const QString appImage=qEnvironmentVariable("APPIMAGE");
+    const QString path=appImage.isEmpty()?QCoreApplication::applicationFilePath():appImage;
+    return steamWrapperCommand(path);
+}
+
 QProcessEnvironment sanitizedSteamEnvironment(QProcessEnvironment env = QProcessEnvironment::systemEnvironment()) {
     const bool fromSteam = !env.value("SteamAppId").isEmpty() || !env.value("SteamGameId").isEmpty() ||
                            !env.value("STEAM_COMPAT_APP_ID").isEmpty() || !env.value("SteamClientLaunch").isEmpty();
@@ -822,6 +839,15 @@ public:
         auto *settingsPage = new QWidget; settingsPage->setObjectName("settingsPage"); auto *settingsLayout = new QVBoxLayout(settingsPage); settingsLayout->setContentsMargins(24,18,24,22); settingsLayout->setSpacing(14);
         auto *settingsHeader = new QHBoxLayout; auto *settingsTitle = new QLabel("Настройки и помощь"); settingsTitle->setObjectName("pageTitle"); settingsHeader->addWidget(settingsTitle,1);
         settingsLayout->addLayout(settingsHeader);
+        auto *steamCard=new QFrame;steamCard->setObjectName("surfaceCard");
+        auto *steamLayout=new QVBoxLayout(steamCard);steamLayout->setContentsMargins(16,14,16,16);steamLayout->setSpacing(8);
+        auto *steamTitle=new QLabel("Прямой запуск через Steam");steamTitle->setObjectName("sectionTitle");steamLayout->addWidget(steamTitle);
+        auto *steamHint=new QLabel("Скопируйте команду и вставьте её в Steam: Wuthering Waves → Свойства → Общие → Параметры запуска. Если там уже есть команда, сохраните её перед ECHO и оставьте один %command% в конце. Для обновления игры временно удалите команду ECHO. Если клиент или качество ресурсов определить не удастся, откроется официальный лаунчер.");
+        steamHint->setWordWrap(true);steamHint->setObjectName("secondaryText");steamLayout->addWidget(steamHint);
+        auto *steamCommand=new QLineEdit(installedSteamWrapperCommand());steamCommand->setReadOnly(true);steamCommand->setObjectName("steamWrapperCommand");steamLayout->addWidget(steamCommand);
+        auto *copySteamCommand=new QPushButton("Скопировать команду для Steam");copySteamCommand->setObjectName("copySteamWrapperCommand");copySteamCommand->setEnabled(!steamCommand->text().isEmpty());steamLayout->addWidget(copySteamCommand,0,Qt::AlignLeft);
+        connect(copySteamCommand,&QPushButton::clicked,this,[steamCommand,copySteamCommand]{QApplication::clipboard()->setText(steamCommand->text());copySteamCommand->setText("Команда скопирована");});
+        settingsLayout->addWidget(steamCard);
         // Settings sections share the same card/disclosure language as the main page.
         auto *diagnosticsGroup = new QFrame;
         diagnosticsGroup->setObjectName("surfaceCard");
@@ -1322,6 +1348,10 @@ public:
         auto *homePlay=pages->widget(0)->findChild<QPushButton*>("playGameButton");
         if(!homePlay||homePlay!=launchBtn||homePlay->text()!="Играть через Steam")return fail("Play button is missing from the main page");
         if(pages->widget(1)->findChild<QPushButton*>("playGameButton"))return fail("Steam launch button is duplicated in settings");
+        const auto *wrapperField=pages->widget(1)->findChild<QLineEdit*>("steamWrapperCommand");
+        const auto *wrapperCopy=pages->widget(1)->findChild<QPushButton*>("copySteamWrapperCommand");
+        if(!wrapperField||!wrapperField->isReadOnly()||!wrapperCopy||!wrapperCopy->isEnabled()||
+           !wrapperField->text().endsWith(" --steam-wrap %command%"))return fail("Steam wrapper setup is missing or invalid");
         if(pages->widget(0)->findChild<QPushButton*>("textButton") == downloadBtn ||
            pages->widget(0)->findChild<QWidget*>("manualSection"))return fail("advanced tools leaked onto the main page");
         if(pages->widget(1)->findChild<QPushButton*>("textButton") != downloadBtn ||
@@ -1419,6 +1449,16 @@ int runDownloadTests() {
 }
 
 int runLaunchTests() {
+    const QString trickyPath="/tmp/ECHO user's $(not-a-command).AppImage";
+    const QString wrapper=steamWrapperCommand(trickyPath);
+    QProcess shell;
+    QString verify=wrapper;verify.replace("%command%", "sentinel");
+    shell.start("/bin/sh", {"-c", "set -- "+verify+"; printf '%s\\n' \"$@\""});
+    if(!shell.waitForFinished() || shell.exitCode()!=0 ||
+       shell.readAllStandardOutput()!=QFile::encodeName(trickyPath)+"\n--steam-wrap\nsentinel\n" ||
+       !steamWrapperCommand("/bad\npath").isEmpty()){
+        fprintf(stderr,"FAIL: Steam wrapper command quoting\n");return 1;
+    }
     QTemporaryDir temp;
     if (!temp.isValid()) { fprintf(stderr,"FAIL: launch test temporary directory unavailable\n"); return 1; }
     const QString root=temp.path(), library=root+"/library", apps=library+"/steamapps", game=apps+"/common/Wuthering Waves";
@@ -1717,4 +1757,5 @@ int main(int argc,char **argv){
     window.show();
     return app.exec();
 }
+
 

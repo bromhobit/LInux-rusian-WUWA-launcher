@@ -1,6 +1,6 @@
 # Maintainer: ECHO Native
 pkgname=echo-native
-pkgver=0.3.3
+pkgver=0.3.4
 pkgrel=1
 pkgdesc='Graphical Linux launcher for Wuthering Waves Russian localization'
 arch=('x86_64')
@@ -32,4 +32,5 @@ package() {
   install -Dm644 "$srcdir/packaging/echo-native.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/echo-native.svg"
   install -Dm644 "$srcdir/packaging/LICENSE-PACKAGING" "$pkgdir/usr/share/licenses/echo-native/LICENSE"
 }
+
 
