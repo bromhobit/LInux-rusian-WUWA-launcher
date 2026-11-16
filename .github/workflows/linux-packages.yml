@@ -2,7 +2,7 @@ name: ECHO Linux packages
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/linux-packages.yml', 'native/**']
+    paths: ['.github/workflows/linux-packages.yml', 'native/**', 'tests/fps_*', 'tests/test-fps-unlock.sh']
   workflow_dispatch:
 permissions:
   contents: write
@@ -30,6 +30,7 @@ jobs:
           for test in smoke ui controller launch auto-install; do
             QT_QPA_PLATFORM=offscreen build/linux/echo-native --"$test"-test
           done
+          bash tests/test-fps-unlock.sh
       - name: Build and test AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
@@ -66,6 +67,7 @@ jobs:
           dpkg-deb --build --root-owner-group deb echo-native_0.3.5_amd64.deb
           dpkg-deb --info echo-native_0.3.5_amd64.deb
       - name: Add packages to existing release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
