@@ -49,6 +49,7 @@ jobs:
           ldd /usr/bin/echo-native | tee /tmp/echo-ldd.txt
           ! grep -q 'not found' /tmp/echo-ldd.txt
       - name: Upload to release
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

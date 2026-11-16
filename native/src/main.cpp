@@ -736,6 +736,22 @@ QString guessGameExe(const QString &dir) {
     return {};
 }
 
+bool fpsGameRunning(const QString &gameRoot) {
+    if (EchoInstall::gameRunning(gameRoot)) return true;
+    QDir proc("/proc");
+    for (const QString &id : proc.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        bool ok = false;
+        if (id.toLongLong(&ok) <= 0 || !ok) continue;
+        QFile comm(proc.filePath(id + "/comm")), cmd(proc.filePath(id + "/cmdline"));
+        if (!comm.open(QIODevice::ReadOnly) || !cmd.open(QIODevice::ReadOnly)) continue;
+        const QByteArray name = comm.readAll().toLower();
+        const QByteArray args = cmd.read(1024 * 1024).toLower();
+        if (name.startsWith("client-win64-sh") || args.contains("client-win64-shipping.exe") ||
+            name.startsWith("wuthering waves") || args.contains("wuthering waves.exe")) return true;
+    }
+    return false;
+}
+
 class Window final : public QWidget {
 public:
     explicit Window(bool smoke = false, bool autoCheck = false) : settings("ECHO Native", "ECHO Native") {
@@ -849,8 +865,8 @@ public:
         settingsLayout->addLayout(settingsHeader);
         auto *fpsCard = new QFrame; fpsCard->setObjectName("surfaceCard");
         auto *fpsLayout = new QVBoxLayout(fpsCard); fpsLayout->setContentsMargins(16,14,16,16); fpsLayout->setSpacing(8);
-        auto *fpsTitle = new QLabel("120 FPS · экспериментально"); fpsTitle->setObjectName("sectionTitle"); fpsLayout->addWidget(fpsTitle);
-        auto *fpsHint = new QLabel("Изменяет сохранённый лимит кадров игры. Совместимость с текущей версией не подтверждена. Закройте игру и её лаунчер перед изменением.");
+        auto *fpsTitle = new QLabel("120 FPS"); fpsTitle->setObjectName("sectionTitle"); fpsLayout->addWidget(fpsTitle);
+        auto *fpsHint = new QLabel("Устанавливает лимит 120 FPS и сохраняет прежние настройки. Закройте игру и её лаунчер перед изменением. Фактическая частота зависит от производительности и настроек графики.");
         fpsHint->setWordWrap(true); fpsHint->setObjectName("secondaryText"); fpsLayout->addWidget(fpsHint);
         auto *fpsStatus = new QLabel; fpsStatus->setWordWrap(true); fpsStatus->setObjectName("inlineStatus"); fpsLayout->addWidget(fpsStatus);
         auto *fpsActions = new QHBoxLayout;
@@ -862,7 +878,7 @@ public:
                 fpsStatus->setText("Нужна одна однозначно обнаруженная Steam-установка игры."); return;
             }
             const QString root = games.first().gameDir;
-            if (EchoInstall::gameRunning(root)) { fpsStatus->setText("Закройте игру и её лаунчер перед изменением лимита."); return; }
+            if (fpsGameRunning(root)) { fpsStatus->setText("Закройте игру и её лаунчер перед изменением лимита."); return; }
             const auto result = enable ? EchoFps::enable(root) : EchoFps::disable(root);
             fpsStatus->setText(result.message);
         };
