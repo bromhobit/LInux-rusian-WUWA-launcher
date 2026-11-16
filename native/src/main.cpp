@@ -58,6 +58,7 @@
 #include "steam_options.h"
 #include "steam_config.h"
 #include "controller.h"
+#include "fps_unlock.h"
 
 namespace {
 class DialogLocalizer final : public QObject {
@@ -735,6 +736,22 @@ QString guessGameExe(const QString &dir) {
     return {};
 }
 
+bool fpsGameRunning(const QString &gameRoot) {
+    if (EchoInstall::gameRunning(gameRoot)) return true;
+    QDir proc("/proc");
+    for (const QString &id : proc.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+        bool ok = false;
+        if (id.toLongLong(&ok) <= 0 || !ok) continue;
+        QFile comm(proc.filePath(id + "/comm")), cmd(proc.filePath(id + "/cmdline"));
+        if (!comm.open(QIODevice::ReadOnly) || !cmd.open(QIODevice::ReadOnly)) continue;
+        const QByteArray name = comm.readAll().toLower();
+        const QByteArray args = cmd.read(1024 * 1024).toLower();
+        if (name.startsWith("client-win64-sh") || args.contains("client-win64-shipping.exe") ||
+            name.startsWith("wuthering waves") || args.contains("wuthering waves.exe")) return true;
+    }
+    return false;
+}
+
 class Window final : public QWidget {
 public:
     explicit Window(bool smoke = false, bool autoCheck = false) : settings("ECHO Native", "ECHO Native") {
@@ -846,6 +863,28 @@ public:
         auto *settingsPage = new QWidget; settingsPage->setObjectName("settingsPage"); auto *settingsLayout = new QVBoxLayout(settingsPage); settingsLayout->setContentsMargins(24,18,24,22); settingsLayout->setSpacing(14);
         auto *settingsHeader = new QHBoxLayout; auto *settingsTitle = new QLabel("Настройки и помощь"); settingsTitle->setObjectName("pageTitle"); settingsHeader->addWidget(settingsTitle,1);
         settingsLayout->addLayout(settingsHeader);
+        auto *fpsCard = new QFrame; fpsCard->setObjectName("surfaceCard");
+        auto *fpsLayout = new QVBoxLayout(fpsCard); fpsLayout->setContentsMargins(16,14,16,16); fpsLayout->setSpacing(8);
+        auto *fpsTitle = new QLabel("120 FPS"); fpsTitle->setObjectName("sectionTitle"); fpsLayout->addWidget(fpsTitle);
+        auto *fpsHint = new QLabel("Устанавливает лимит 120 FPS и сохраняет прежние настройки. Закройте игру и её лаунчер перед изменением. Фактическая частота зависит от производительности и настроек графики.");
+        fpsHint->setWordWrap(true); fpsHint->setObjectName("secondaryText"); fpsLayout->addWidget(fpsHint);
+        auto *fpsStatus = new QLabel; fpsStatus->setWordWrap(true); fpsStatus->setObjectName("inlineStatus"); fpsLayout->addWidget(fpsStatus);
+        auto *fpsActions = new QHBoxLayout;
+        auto *fpsEnable = new QPushButton("Включить 120 FPS"); fpsEnable->setObjectName("enable120Fps"); fpsActions->addWidget(fpsEnable);
+        auto *fpsDisable = new QPushButton("Вернуть прежний лимит"); fpsDisable->setObjectName("restoreFpsLimit"); fpsActions->addWidget(fpsDisable); fpsActions->addStretch(); fpsLayout->addLayout(fpsActions);
+        auto changeFps = [this, fpsStatus](bool enable) {
+            const auto games = discoverWutheringInstallations(steamRoots());
+            if (games.size() != 1 || games.first().gameDir.isEmpty()) {
+                fpsStatus->setText("Нужна одна однозначно обнаруженная Steam-установка игры."); return;
+            }
+            const QString root = games.first().gameDir;
+            if (fpsGameRunning(root)) { fpsStatus->setText("Закройте игру и её лаунчер перед изменением лимита."); return; }
+            const auto result = enable ? EchoFps::enable(root) : EchoFps::disable(root);
+            fpsStatus->setText(result.message);
+        };
+        connect(fpsEnable, &QPushButton::clicked, this, [changeFps]{ changeFps(true); });
+        connect(fpsDisable, &QPushButton::clicked, this, [changeFps]{ changeFps(false); });
+        settingsLayout->addWidget(fpsCard);
         auto *steamCard=new QFrame;steamCard->setObjectName("surfaceCard");
         auto *steamLayout=new QVBoxLayout(steamCard);steamLayout->setContentsMargins(16,14,16,16);steamLayout->setSpacing(8);
         auto *steamTitle=new QLabel("Прямой запуск через Steam");steamTitle->setObjectName("sectionTitle");steamLayout->addWidget(steamTitle);
@@ -1797,5 +1836,6 @@ int main(int argc,char **argv){
     window.show();
     return app.exec();
 }
+
 
 

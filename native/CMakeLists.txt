@@ -9,12 +9,14 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL3 REQUIRED IMPORTED_TARGET sdl3)
 find_path(XXHASH_INCLUDE_DIR xxhash.h REQUIRED)
 find_library(XXHASH_LIBRARY xxhash REQUIRED)
+find_package(SQLite3 REQUIRED)
 
-add_executable(echo-native src/main.cpp src/auto_install.cpp src/auto_install.h src/controller.cpp src/controller.h src/steam_options.cpp src/steam_options.h src/steam_config.cpp src/steam_config.h)
+add_executable(echo-native src/main.cpp src/auto_install.cpp src/auto_install.h src/controller.cpp src/controller.h src/steam_options.cpp src/steam_options.h src/steam_config.cpp src/steam_config.h src/fps_unlock.cpp src/fps_unlock.h)
 target_include_directories(echo-native PRIVATE ${XXHASH_INCLUDE_DIR})
-target_link_libraries(echo-native PRIVATE Qt6::Widgets Qt6::Network PkgConfig::SDL3 ${XXHASH_LIBRARY})
+target_link_libraries(echo-native PRIVATE Qt6::Widgets Qt6::Network PkgConfig::SDL3 ${XXHASH_LIBRARY} SQLite::SQLite3)
 target_compile_options(echo-native PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(echo-native PRIVATE ECHO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 install(TARGETS echo-native RUNTIME DESTINATION bin)
+
 
 
