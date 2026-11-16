@@ -18,5 +18,12 @@ target_compile_options(echo-native PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(echo-native PRIVATE ECHO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 install(TARGETS echo-native RUNTIME DESTINATION bin)
 
+option(ECHO_BUILD_FPS_TESTS "Build the FPS settings probe" OFF)
+if(ECHO_BUILD_FPS_TESTS)
+  add_executable(echo-fps-probe ../tests/fps_probe.cpp src/fps_unlock.cpp)
+  target_include_directories(echo-fps-probe PRIVATE src)
+  target_link_libraries(echo-fps-probe PRIVATE Qt6::Core SQLite::SQLite3)
+endif()
+
 
 
