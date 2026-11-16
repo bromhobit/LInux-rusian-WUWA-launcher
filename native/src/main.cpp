@@ -12,6 +12,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -54,6 +55,8 @@
 #include <unistd.h>
 #include <vector>
 #include "auto_install.h"
+#include "steam_options.h"
+#include "steam_config.h"
 #include "controller.h"
 
 namespace {
@@ -456,18 +459,28 @@ bool directSteamArguments(const QStringList &input,const QList<SteamGame> &games
     return true;
 }
 
+bool takeDirectIntent(const QList<QByteArray> &input,QList<QByteArray> *clean) {
+    int count=0;clean->clear();
+    for(const auto &arg:input){if(arg=="--echo-native-direct")++count;else clean->append(arg);}
+    return count==1;
+}
+
 int runSteamWrapper(int argc,char **argv) {
     QStringList command;
-    for(int i=2;i<argc;++i)command<<QFile::decodeName(argv[i]);
+    QList<QByteArray> raw, originalBytes;
+    for(int i=2;i<argc;++i)raw<<QByteArray(argv[i]);
+    const bool direct=takeDirectIntent(raw,&originalBytes);
+    for(const auto &arg:originalBytes)command<<QFile::decodeName(arg);
     if(command.isEmpty()){fprintf(stderr,"ECHO: Steam command is empty.\n");return 2;}
-    QStringList next;QString reason;
-    directSteamArguments(command,discoverWutheringInstallations(steamRoots()),&next,&reason);
+    QStringList next=command;QString reason="official launcher";
+    if(direct && qEnvironmentVariable("SteamAppId")==WutheringAppId)
+        directSteamArguments(command,discoverWutheringInstallations(steamRoots()),&next,&reason);
     fprintf(stderr,"ECHO Steam: %s\n",qPrintable(reason));
     std::vector<QByteArray> storage;
     storage.reserve(static_cast<size_t>(next.size()));
     for(qsizetype i=0;i<next.size();++i){
         if(i<command.size()&&next.at(i)==command.at(i))
-            storage.emplace_back(argv[i+2]); // Preserve original non-UTF-8 bytes.
+            storage.emplace_back(originalBytes.at(i)); // Preserve original non-UTF-8 bytes after removing the marker.
         else
             storage.emplace_back(QFile::encodeName(next.at(i)));
     }
@@ -495,7 +508,7 @@ QString steamExecutable() {
     return QStandardPaths::findExecutable("steam");
 }
 
-QStringList steamLaunchArguments() { return {"-applaunch", WutheringAppId}; }
+QStringList steamLaunchArguments() { return {"-applaunch", WutheringAppId, "--echo-native-direct"}; }
 
 // Steam evaluates launch options as a shell command. Always quote the entire
 // path, including spaces and apostrophes; AppImages must use their stable path
@@ -505,12 +518,6 @@ QString steamWrapperCommand(const QString &path) {
     QString quoted=path;
     quoted.replace("'", "'\\''");
     return "'"+quoted+"' --steam-wrap %command%";
-}
-
-QString installedSteamWrapperCommand() {
-    const QString appImage=qEnvironmentVariable("APPIMAGE");
-    const QString path=appImage.isEmpty()?QCoreApplication::applicationFilePath():appImage;
-    return steamWrapperCommand(path);
 }
 
 QProcessEnvironment sanitizedSteamEnvironment(QProcessEnvironment env = QProcessEnvironment::systemEnvironment()) {
@@ -842,11 +849,35 @@ public:
         auto *steamCard=new QFrame;steamCard->setObjectName("surfaceCard");
         auto *steamLayout=new QVBoxLayout(steamCard);steamLayout->setContentsMargins(16,14,16,16);steamLayout->setSpacing(8);
         auto *steamTitle=new QLabel("Прямой запуск через Steam");steamTitle->setObjectName("sectionTitle");steamLayout->addWidget(steamTitle);
-        auto *steamHint=new QLabel("Скопируйте команду и вставьте её в Steam: Wuthering Waves → Свойства → Общие → Параметры запуска. Если там уже есть команда, сохраните её перед ECHO и оставьте один %command% в конце. Для обновления игры временно удалите команду ECHO. Если клиент или качество ресурсов определить не удастся, откроется официальный лаунчер.");
+        auto *steamHint=new QLabel("Сверьте текущие параметры с полем в Steam: Wuthering Waves → Свойства → Общие → Параметры запуска. ECHO подготовит строку с вашими параметрами. Скопируйте её в Steam. Кнопка ECHO запустит игру напрямую, а запуск из Steam откроет официальный лаунчер. Если клиент или качество определить не удастся, откроется официальный лаунчер.");
         steamHint->setWordWrap(true);steamHint->setObjectName("secondaryText");steamLayout->addWidget(steamHint);
-        auto *steamCommand=new QLineEdit(installedSteamWrapperCommand());steamCommand->setReadOnly(true);steamCommand->setObjectName("steamWrapperCommand");steamLayout->addWidget(steamCommand);
-        auto *copySteamCommand=new QPushButton("Скопировать команду для Steam");copySteamCommand->setObjectName("copySteamWrapperCommand");copySteamCommand->setEnabled(!steamCommand->text().isEmpty());steamLayout->addWidget(copySteamCommand,0,Qt::AlignLeft);
+        const auto saved=EchoSteam::readSteamConfig(steamRoots());
+        auto *steamStatus=new QLabel(saved.ok?"Последние сохранённые параметры Steam. Сверьте их с открытым клиентом перед копированием.":"Не удалось прочитать параметры Steam. Скопируйте текущую строку из Steam в поле ниже.");
+        steamStatus->setWordWrap(true);steamStatus->setObjectName("secondaryText");steamLayout->addWidget(steamStatus);
+        auto *currentLabel=new QLabel("Текущие параметры Steam");steamLayout->addWidget(currentLabel);
+        auto *currentOptions=new QLineEdit(saved.ok?saved.options:QString());currentOptions->setObjectName("currentSteamOptions");currentOptions->setPlaceholderText("Текущие параметры запуска Steam (если есть)");steamLayout->addWidget(currentOptions);
+        auto *resultLabel=new QLabel("Команда для Steam");steamLayout->addWidget(resultLabel);
+        auto *steamCommand=new QLineEdit;steamCommand->setReadOnly(true);steamCommand->setObjectName("steamWrapperCommand");steamLayout->addWidget(steamCommand);
+        auto *steamActions=new QHBoxLayout;
+        auto *copySteamCommand=new QPushButton("Скопировать объединённую команду");copySteamCommand->setObjectName("copySteamWrapperCommand");steamActions->addWidget(copySteamCommand);
+        auto *openSteamSettings=new QPushButton("Открыть свойства в Steam");steamActions->addWidget(openSteamSettings);steamActions->addStretch();steamLayout->addLayout(steamActions);
+        auto *noSteamOptions=new QPushButton("В Steam поле пустое");noSteamOptions->setObjectName("noSteamOptions");steamLayout->addWidget(noSteamOptions,0,Qt::AlignLeft);
+        auto prepareSteam=[currentOptions,steamCommand,copySteamCommand,steamStatus]{
+            const QString appImage=qEnvironmentVariable("APPIMAGE");
+            const QString executable=appImage.isEmpty()?QCoreApplication::applicationFilePath():appImage;
+            const auto result=EchoSteamOptions::merge(currentOptions->text(),executable);
+            steamCommand->setText(result.ok?result.options:QString());
+            steamCommand->setCursorPosition(0);
+            copySteamCommand->setText("Скопировать объединённую команду");
+            copySteamCommand->setEnabled(result.ok);
+            if(!result.ok)steamStatus->setText(result.error);
+            else steamStatus->setText("Сверьте исходную строку с текущими параметрами в Steam. Готовая строка сохраняет исходные параметры.");
+        };
+        connect(currentOptions,&QLineEdit::textChanged,this,[prepareSteam]{prepareSteam();});prepareSteam();
+        connect(noSteamOptions,&QPushButton::clicked,this,[currentOptions,prepareSteam]{currentOptions->clear();prepareSteam();});
+        if(!saved.ok){steamStatus->setText(saved.error+" Скопируйте текущую строку из Steam в поле выше.");steamCommand->clear();copySteamCommand->setEnabled(false);}
         connect(copySteamCommand,&QPushButton::clicked,this,[steamCommand,copySteamCommand]{QApplication::clipboard()->setText(steamCommand->text());copySteamCommand->setText("Команда скопирована");});
+        connect(openSteamSettings,&QPushButton::clicked,this,[]{QDesktopServices::openUrl(QUrl("steam://gameproperties/3513350"));});
         settingsLayout->addWidget(steamCard);
         // Settings sections share the same card/disclosure language as the main page.
         auto *diagnosticsGroup = new QFrame;
@@ -1350,8 +1381,8 @@ public:
         if(pages->widget(1)->findChild<QPushButton*>("playGameButton"))return fail("Steam launch button is duplicated in settings");
         const auto *wrapperField=pages->widget(1)->findChild<QLineEdit*>("steamWrapperCommand");
         const auto *wrapperCopy=pages->widget(1)->findChild<QPushButton*>("copySteamWrapperCommand");
-        if(!wrapperField||!wrapperField->isReadOnly()||!wrapperCopy||!wrapperCopy->isEnabled()||
-           !wrapperField->text().endsWith(" --steam-wrap %command%"))return fail("Steam wrapper setup is missing or invalid");
+        if(!wrapperField||!wrapperField->isReadOnly()||!wrapperCopy||
+           (wrapperCopy->isEnabled()&&!wrapperField->text().endsWith(" --steam-wrap %command%")))return fail("Steam wrapper setup is missing or invalid");
         if(pages->widget(0)->findChild<QPushButton*>("textButton") == downloadBtn ||
            pages->widget(0)->findChild<QWidget*>("manualSection"))return fail("advanced tools leaked onto the main page");
         if(pages->widget(1)->findChild<QPushButton*>("textButton") != downloadBtn ||
@@ -1449,6 +1480,15 @@ int runDownloadTests() {
 }
 
 int runLaunchTests() {
+    if(EchoSteamOptions::runSteamOptionsTests()!=0 || EchoSteam::runSteamConfigTests()!=0)return 1;
+    const QByteArray opaque=QByteArray::fromHex("ff80");
+    QList<QByteArray> clean;
+    const QList<QByteArray> ordinary{"proton",opaque,"launcher.exe"};
+    if(takeDirectIntent(ordinary,&clean)||clean!=ordinary){fprintf(stderr,"FAIL: ordinary Steam launch changed\n");return 1;}
+    auto requested=ordinary;requested<<"--echo-native-direct";
+    if(!takeDirectIntent(requested,&clean)||clean!=ordinary){fprintf(stderr,"FAIL: ECHO launch intent not consumed\n");return 1;}
+    requested<<"--echo-native-direct";
+    if(takeDirectIntent(requested,&clean)||clean!=ordinary){fprintf(stderr,"FAIL: duplicate launch intent must fall back\n");return 1;}
     const QString trickyPath="/tmp/ECHO user's $(not-a-command).AppImage";
     const QString wrapper=steamWrapperCommand(trickyPath);
     QProcess shell;
@@ -1521,7 +1561,7 @@ int runLaunchTests() {
     QProcess process; QString error;
     if (launchStandaloneProton(&process,proton,shipping,compat,library,&error) || !error.contains("Client-Win64-Shipping.exe") || QFileInfo::exists(compat)) { fprintf(stderr,"FAIL: internal shipping EXE was not safely refused\n"); return 1; }
     if (!isSupportedStandaloneLauncher(game+"/launcher.exe") || isSupportedStandaloneLauncher(shipping)) { fprintf(stderr,"FAIL: standalone launcher validation failed\n"); return 1; }
-    if (steamLaunchArguments()!=QStringList({"-applaunch","3513350"})) { fprintf(stderr,"FAIL: Steam launch arguments mismatch\n"); return 1; }
+    if (steamLaunchArguments()!=QStringList({"-applaunch","3513350","--echo-native-direct"})) { fprintf(stderr,"FAIL: Steam launch arguments mismatch\n"); return 1; }
     if (!launchStandaloneProton(&process,proton,game+"/launcher.exe",compat,library,&error) || process.program()!=proton || process.arguments()!=QStringList({"run",game+"/launcher.exe"}) || process.state()!=QProcess::NotRunning) { fprintf(stderr,"FAIL: standalone command preparation failed\n"); return 1; }
     // Only literal, direct wrapper commands can cause a preflight block.
     if(simpleWrapperFromLaunchOptions("~/proton-launch %command%","/fake/home")!="/fake/home/proton-launch"||
