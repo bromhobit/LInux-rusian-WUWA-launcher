@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(echo_native VERSION 0.3.3 LANGUAGES CXX)
+project(echo_native VERSION 0.3.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,4 +16,5 @@ target_link_libraries(echo-native PRIVATE Qt6::Widgets Qt6::Network PkgConfig::S
 target_compile_options(echo-native PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_definitions(echo-native PRIVATE ECHO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/..")
 install(TARGETS echo-native RUNTIME DESTINATION bin)
+
 
