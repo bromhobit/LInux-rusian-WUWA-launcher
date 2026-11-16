@@ -14,7 +14,7 @@ jobs:
     container: archlinux:base-devel
     steps:
       - name: Install dependencies
-        run: pacman -Syu --noconfirm --needed git cmake qt6-base sdl3 xxhash pkgconf python github-cli ca-certificates
+        run: pacman -Syu --noconfirm --needed git cmake qt6-base sdl3 xxhash sqlite pkgconf python github-cli ca-certificates
       - uses: actions/checkout@v4
       - name: Build and test package as non-root
         shell: bash
@@ -63,4 +63,5 @@ jobs:
           done
           echo 'Release v0.3.5 was not created in time' >&2
           exit 1
+
 
