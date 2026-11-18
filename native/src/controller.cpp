@@ -27,7 +27,8 @@
 
 class Controller final : public QObject {
 public:
- Controller(QWidget *window,bool useHardware):QObject(window),root(window) {
+ Controller(QWidget *window,bool useHardware,bool external,std::function<bool()> isActive,std::function<bool(int)> popup)
+  :QObject(window),root(window),externalEvents(external),active(std::move(isActive)),popupKey(std::move(popup)) {
   setObjectName("controllerObject");
   auto *hint=new QLabel("🎮 A — выбрать  ·  B — назад  ·  LB/RB — раздел",root);
   hint->setObjectName("controllerHint");
@@ -47,10 +48,37 @@ public:
   connect(timer,&QTimer::timeout,this,[this]{poll();});
   timer->start(40);
  }
- ~Controller() override {if(pad)SDL_CloseGamepad(pad);if(initialized)SDL_QuitSubSystem(SDL_INIT_GAMEPAD);}
+ ~Controller() override {
+  if(pad)SDL_CloseGamepad(pad);
+  if(initialized)SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
+  delete status.data();
+  delete focusFrame.data();
+ }
+ void handleEvent(const SDL_Event &e){
+  if(e.type==SDL_EVENT_GAMEPAD_ADDED)open(e.gdevice.which);
+  else if(e.type==SDL_EVENT_GAMEPAD_REMOVED&&pad&&SDL_GetGamepadID(pad)==e.gdevice.which){
+   SDL_CloseGamepad(pad);pad=nullptr;if(status)status->hide();
+   int n=0;auto *ids=SDL_GetGamepads(&n);if(n>0&&ids)open(ids[0]);SDL_free(ids);
+  }else if(e.type==SDL_EVENT_GAMEPAD_BUTTON_DOWN&&pad&&e.gbutton.which==SDL_GetGamepadID(pad)&&interactive()){
+   const auto b=static_cast<SDL_GamepadButton>(e.gbutton.button);
+   if(b!=SDL_GAMEPAD_BUTTON_DPAD_UP&&b!=SDL_GAMEPAD_BUTTON_DPAD_DOWN&&
+      b!=SDL_GAMEPAD_BUTTON_DPAD_LEFT&&b!=SDL_GAMEPAD_BUTTON_DPAD_RIGHT)press(b);
+  }
+ }
  void press(SDL_GamepadButton b){
   gamepadMode=true;
-  showFocus(QApplication::focusWidget());
+  showFocus(focused());
+  int key=0;
+  switch(b){
+   case SDL_GAMEPAD_BUTTON_DPAD_UP:key=Qt::Key_Up;break;
+   case SDL_GAMEPAD_BUTTON_DPAD_DOWN:key=Qt::Key_Down;break;
+   case SDL_GAMEPAD_BUTTON_DPAD_LEFT:key=Qt::Key_Left;break;
+   case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:key=Qt::Key_Right;break;
+   case SDL_GAMEPAD_BUTTON_SOUTH:key=Qt::Key_Return;break;
+   case SDL_GAMEPAD_BUTTON_EAST:key=Qt::Key_Escape;break;
+   default:break;
+  }
+  if(key&&popupKey&&popupKey(key))return;
   switch(b){
    case SDL_GAMEPAD_BUTTON_DPAD_UP: navigate(0,-1);break;
    case SDL_GAMEPAD_BUTTON_DPAD_LEFT: navigate(-1,0);break;
@@ -67,19 +95,7 @@ public:
 private:
  void open(SDL_JoystickID id){if(pad)return;pad=SDL_OpenGamepad(id);if(status)status->setVisible(pad!=nullptr);}
  void poll(){
-  SDL_Event e;
-  while(SDL_PollEvent(&e)){
-   if(e.type==SDL_EVENT_GAMEPAD_ADDED)open(e.gdevice.which);
-   else if(e.type==SDL_EVENT_GAMEPAD_REMOVED&&pad&&SDL_GetGamepadID(pad)==e.gdevice.which){
-    SDL_CloseGamepad(pad);pad=nullptr;status->hide();
-    int n=0;auto *ids=SDL_GetGamepads(&n);if(n>0&&ids)open(ids[0]);SDL_free(ids);
-   }else if(e.type==SDL_EVENT_GAMEPAD_BUTTON_DOWN&&pad&&e.gbutton.which==SDL_GetGamepadID(pad)
-             &&interactive()){
-    const auto b=static_cast<SDL_GamepadButton>(e.gbutton.button);
-    if(b!=SDL_GAMEPAD_BUTTON_DPAD_UP&&b!=SDL_GAMEPAD_BUTTON_DPAD_DOWN&&
-       b!=SDL_GAMEPAD_BUTTON_DPAD_LEFT&&b!=SDL_GAMEPAD_BUTTON_DPAD_RIGHT)press(b);
-   }
-  }
+  if(!externalEvents){SDL_Event e;while(SDL_PollEvent(&e))handleEvent(e);}
   if(!pad||!interactive()){heldDirection=0;return;}
   const auto now=QDateTime::currentMSecsSinceEpoch();
   const int lx=SDL_GetGamepadAxis(pad,SDL_GAMEPAD_AXIS_LEFTX);
@@ -112,7 +128,12 @@ private:
  bool interactive()const{
   if(auto *popup=QApplication::activePopupWidget())return belongs(popup)||belongs(popup->parentWidget());
   if(auto *modal=QApplication::activeModalWidget())return belongs(modal)||belongs(modal->parentWidget());
+  if(active)return active();
   return root->isActiveWindow();
+ }
+ QWidget *focused()const{
+  auto *focus=QApplication::focusWidget();
+  return focus?focus:(externalEvents?root->focusWidget():nullptr);
  }
  void ensureFocusFrame(){
   if(focusFrame)return;
@@ -164,9 +185,9 @@ private:
    if(auto *box=qobject_cast<QMessageBox*>(modal)){messageBoxNavigate(box,dx,dy);return;}
    key(modalFocus(modal),arrow);return;
   }
-  auto *f=QApplication::focusWidget();
+  auto *f=focused();
   if(!f||!(f==root||root->isAncestorOf(f))){
-   if(auto *b=root->findChild<QAbstractButton*>("playGameButton"))b->setFocus(Qt::OtherFocusReason);
+   if(auto *b=root->findChild<QAbstractButton*>("playGameButton")){b->setFocus(Qt::OtherFocusReason);showFocus(b);}
    return;
   }
   QVector<QWidget*> choices;
@@ -187,6 +208,7 @@ private:
   }
   if(!target)return;
   target->setFocus(Qt::OtherFocusReason);
+  showFocus(target);
   for(auto *area:root->findChildren<QScrollArea*>())
    if(area->widget()&&(area->widget()==target||area->widget()->isAncestorOf(target)))
     area->ensureWidgetVisible(target,18,18);
@@ -195,7 +217,7 @@ private:
   if(auto *popup=QApplication::activePopupWidget()){
    auto *f=QApplication::focusWidget();key(f?f:popup,Qt::Key_Return);return;
   }
-  auto *f=QApplication::focusWidget();
+  auto *f=focused();
   if(auto *modal=QApplication::activeModalWidget()){
    f=modalFocus(modal);
    if(f==modal)if(auto *box=qobject_cast<QMessageBox*>(modal))if(box->defaultButton())f=box->defaultButton();
@@ -217,7 +239,7 @@ private:
   }
   auto *stack=root->findChild<QStackedWidget*>("pageStack");
   if(stack&&stack->currentIndex()!=0)page(false);
-  else if(auto *play=root->findChild<QAbstractButton*>("playGameButton"))play->setFocus(Qt::OtherFocusReason);
+  else if(auto *play=root->findChild<QAbstractButton*>("playGameButton")){play->setFocus(Qt::OtherFocusReason);showFocus(play);}
  }
  void page(bool settings){
   if(auto *modal=QApplication::activeModalWidget()){
@@ -226,62 +248,84 @@ private:
   }
   for(auto *b:root->findChildren<QAbstractButton*>("navButton"))
    if(b->text()==(settings?QStringLiteral("Настройки"):QStringLiteral("Перевод"))){
-    b->click();b->setFocus(Qt::OtherFocusReason);break;
+    b->click();b->setFocus(Qt::OtherFocusReason);showFocus(b);break;
    }
  }
  QWidget *root{};
- QLabel *status{};
+ QPointer<QLabel> status;
  QPointer<QFocusFrame> focusFrame;
  SDL_Gamepad *pad{};
  bool initialized{};
  bool gamepadMode{};
+ bool externalEvents{};
+ std::function<bool()> active;
+ std::function<bool(int)> popupKey;
  int heldDirection{};
  qint64 nextRepeat{};
  qint64 lastAxis{};
 };
-void attachController(QWidget *window,bool hardware){new Controller(window,hardware);}
+void attachController(QWidget *window,bool hardware,bool externalEvents,std::function<bool()> active,std::function<bool(int)> popupKey){
+ new Controller(window,hardware,externalEvents,std::move(active),std::move(popupKey));
+}
+void dispatchControllerEvent(QWidget *window,const SDL_Event &event){
+ if(auto *c=dynamic_cast<Controller*>(window->findChild<QObject*>("controllerObject")))c->handleEvent(event);
+}
 bool testController(QWidget *window){
+ auto fail=[](int line){fprintf(stderr,"FAIL: controller check at line %d\n",line);return false;};
  auto *c=dynamic_cast<Controller*>(window->findChild<QObject*>("controllerObject"));auto *stack=window->findChild<QStackedWidget*>("pageStack");
- if(!c||!stack)return false;
+ if(!c||!stack)return fail(__LINE__);
  c->press(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);QApplication::processEvents();
- if(stack->currentIndex()!=1)return false;
+ if(stack->currentIndex()!=1)return fail(__LINE__);
  c->press(SDL_GAMEPAD_BUTTON_EAST);QApplication::processEvents();
- if(stack->currentIndex()!=0)return false;
+ if(stack->currentIndex()!=0)return fail(__LINE__);
  c->press(SDL_GAMEPAD_BUTTON_DPAD_DOWN);QApplication::processEvents();
- auto *focus=QApplication::focusWidget();
+ auto *focus=QApplication::focusWidget();if(!focus)focus=window->focusWidget();
  auto *frame=window->findChild<QFocusFrame*>("gamepadFocusFrame");
- if(!focus||!focus->isVisible()||!focus->isEnabled()||!frame||!frame->isVisible()||frame->widget()!=focus)return false;
+ if(!focus||!focus->isVisible()||!focus->isEnabled()||!frame||!frame->isVisible()||frame->widget()!=focus)return fail(__LINE__);
 
  QMessageBox question(QMessageBox::Question,"Проверка","Продолжить?",QMessageBox::Yes|QMessageBox::No,window);
  question.setWindowModality(Qt::WindowModal);question.setDefaultButton(QMessageBox::No);
  question.show();question.activateWindow();QApplication::processEvents();
- if(QApplication::activeModalWidget()!=&question)return false;
+ if(QApplication::activeModalWidget()!=&question)return fail(__LINE__);
  auto *no=question.button(QMessageBox::No);auto *yes=question.button(QMessageBox::Yes);
- if(!no||!yes)return false;
+ if(!no||!yes)return fail(__LINE__);
  no->setFocus(Qt::OtherFocusReason);QApplication::processEvents();
  c->press(SDL_GAMEPAD_BUTTON_DPAD_LEFT);QApplication::processEvents();
- if(QApplication::focusWidget()!=yes||!c->focusVisibleFor(yes))return false;
+ if((QApplication::focusWidget()?QApplication::focusWidget():question.focusWidget())!=yes||!c->focusVisibleFor(yes))return fail(__LINE__);
  c->press(SDL_GAMEPAD_BUTTON_SOUTH);QApplication::processEvents();
- if(question.isVisible()||question.result()!=QMessageBox::Yes)return false;
+ if(question.isVisible()||question.result()!=QMessageBox::Yes)return fail(__LINE__);
 
  QMessageBox cancel(QMessageBox::Question,"Проверка","Продолжить?",QMessageBox::Yes|QMessageBox::No,window);
  cancel.setWindowModality(Qt::WindowModal);cancel.show();cancel.activateWindow();QApplication::processEvents();
  c->press(SDL_GAMEPAD_BUTTON_EAST);QApplication::processEvents();
- if(cancel.isVisible())return false;
+ if(cancel.isVisible())return fail(__LINE__);
 
- QTemporaryDir temp;if(!temp.isValid())return false;
+ QTemporaryDir temp;if(!temp.isValid())return fail(__LINE__);
  const QString file=temp.filePath("translation.pak");QFile fixture(file);
- if(!fixture.open(QIODevice::WriteOnly)||fixture.write("test")!=4)return false;
+ if(!fixture.open(QIODevice::WriteOnly)||fixture.write("test")!=4)return fail(__LINE__);
  fixture.close();
  QFileDialog dialog(window,"Выберите пакет",temp.path());
  dialog.setOption(QFileDialog::DontUseNativeDialog);dialog.setFileMode(QFileDialog::ExistingFile);
  dialog.setWindowModality(Qt::WindowModal);dialog.show();dialog.activateWindow();QApplication::processEvents();
- auto *edit=dialog.findChild<QLineEdit*>("fileNameEdit");if(!edit)return false;
+ auto *edit=dialog.findChild<QLineEdit*>("fileNameEdit");if(!edit)return fail(__LINE__);
  edit->setText(file);edit->setFocus(Qt::OtherFocusReason);QApplication::processEvents();
  c->press(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER);QApplication::processEvents();
- auto *afterTab=QApplication::focusWidget();
- if(!afterTab||afterTab==edit||!dialog.isAncestorOf(afterTab))return false;
+ auto *afterTab=QApplication::focusWidget();if(!afterTab)afterTab=dialog.focusWidget();
+ if(!afterTab||afterTab==edit||!dialog.isAncestorOf(afterTab))return fail(__LINE__);
  edit->setFocus(Qt::OtherFocusReason);QApplication::processEvents();
  c->press(SDL_GAMEPAD_BUTTON_SOUTH);QApplication::processEvents();
  return !dialog.isVisible()&&dialog.result()==QDialog::Accepted;
+}
+
+bool testControllerPopup(QWidget *window,QComboBox *combo){
+ auto *c=dynamic_cast<Controller*>(window->findChild<QObject*>("controllerObject"));
+ if(!c||!combo||combo->count()<2)return false;
+ combo->setCurrentIndex(0);combo->setFocus();combo->showPopup();QApplication::processEvents();
+ c->press(SDL_GAMEPAD_BUTTON_DPAD_DOWN);c->press(SDL_GAMEPAD_BUTTON_SOUTH);QApplication::processEvents();
+ return combo->currentIndex()==1;
+}
+bool testControllerModal(QWidget *window,QDialog *dialog){
+ auto *c=dynamic_cast<Controller*>(window->findChild<QObject*>("controllerObject"));
+ if(!c||!dialog||QApplication::activeModalWidget()!=dialog)return false;
+ c->press(SDL_GAMEPAD_BUTTON_SOUTH);QApplication::processEvents();return !dialog->isVisible();
 }

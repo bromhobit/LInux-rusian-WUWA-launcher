@@ -52,6 +52,7 @@
 #include <xxhash.h>
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <unistd.h>
 #include <vector>
 #include "auto_install.h"
@@ -471,11 +472,29 @@ int runSteamWrapper(int argc,char **argv) {
     QList<QByteArray> raw, originalBytes;
     for(int i=2;i<argc;++i)raw<<QByteArray(argv[i]);
     const bool direct=takeDirectIntent(raw,&originalBytes);
+    const bool flagDirect=QByteArray(argv[1])=="--steam-wrap-direct"&&
+                          qEnvironmentVariable("ECHO_OFFICIAL_LAUNCHER")!=QLatin1String("1");
+    const bool envDirect=qEnvironmentVariable("ECHO_DIRECT")==QLatin1String("1")&&
+                         qEnvironmentVariable("ECHO_OFFICIAL_LAUNCHER")!=QLatin1String("1");
     for(const auto &arg:originalBytes)command<<QFile::decodeName(arg);
     if(command.isEmpty()){fprintf(stderr,"ECHO: Steam command is empty.\n");return 2;}
     QStringList next=command;QString reason="official launcher";
-    if(direct && qEnvironmentVariable("SteamAppId")==WutheringAppId)
-        directSteamArguments(command,discoverWutheringInstallations(steamRoots()),&next,&reason);
+    if((direct||flagDirect||envDirect) && qEnvironmentVariable("SteamAppId")==WutheringAppId){
+        const QList<SteamGame> games=discoverWutheringInstallations(steamRoots());
+        if(directSteamArguments(command,games,&next,&reason)){
+            const QString genericData=QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+            if(!genericData.isEmpty()){
+                const QString appDataPath=genericData+"/ECHO Native/ECHO Native";
+                const QString gameDir=games.first().gameDir;
+                const QString resourceVersion=EchoInstall::detectResourceVersion(gameDir);
+                const auto state=EchoInstall::inspect(appDataPath,gameDir,resourceVersion,{},{});
+                if(state.repairable){
+                    const auto restored=EchoInstall::repair(appDataPath,state.currentResourceVersion);
+                    fprintf(stderr,"ECHO Steam: repair: %s\n",qPrintable(restored.message));
+                }
+            }
+        }
+    }
     fprintf(stderr,"ECHO Steam: %s\n",qPrintable(reason));
     std::vector<QByteArray> storage;
     storage.reserve(static_cast<size_t>(next.size()));
@@ -1014,11 +1033,17 @@ public:
         connect(gameWatch,&QTimer::timeout,this,[this]{refreshAutoInstallControls();});
         gameWatch->start(3000);
         updateChannelStatus(); refreshAutoInstallControls();
+        if(autoCheck) QTimer::singleShot(0,this,[this]{restoreMountOnStartup();});
         if(autoCheck){startupAutoCheck=true;QTimer::singleShot(1500,this,[this]{fetchChannelIndex();});auto *updateTimer=new QTimer(this);connect(updateTimer,&QTimer::timeout,this,[this]{if(!busyNetwork)checkSelectedChannel();});updateTimer->start(30*60*1000);}
         if(smoke) smokeChecks();
     }
+    ~Window() override {
+        if(manifestReply){disconnect(manifestReply,nullptr,this,nullptr);manifestReply->abort();}
+        if(downloadFile){downloadFile->close();delete downloadFile;downloadFile=nullptr;}
+        if(downloadingPackage&&!downloadPartPath.isEmpty())QFile::remove(downloadPartPath);
+    }
 private:
-    QSettings settings; QString settingsPath,appDataPath,logPath; QLineEdit *pakEdit{},*sigEdit{},*targetEdit{}; QComboBox *channelBox{}; QLabel *statusLabel{},*gameDot{},*progressLabel{},*channelStatus{},*versionStatus{},*installAvailability{}; QPushButton *launchBtn{},*installBtn{},*refreshChannelsBtn{},*checkVersionBtn{},*cancelRequestBtn{},*downloadBtn{},*autoInstallBtn{},*uninstallBtn{},*verifyBtn{},*repairBtn{},*stopBackgroundBtn{}; QPlainTextEdit *diagnostic{},*preview{}; QProgressBar *progress{}; QWidget *progressWrap{}; QNetworkAccessManager *network{}; QNetworkReply *manifestReply{}; QTimer *requestTimer{}; QFile *downloadFile{}; QString downloadPartPath{},downloadFinalPath{},downloadExpectedHash{},downloadName{},downloadChannel{}; QList<TranslationChannel> channels; QHash<QString,TranslationManifest> manifests; bool busyNetwork{},networkCancelled{},downloadingPackage{},pendingAutoInstall{},startupAutoCheck{}; QString pendingInstallChannel,pendingInstallGame,pendingInstallResourceVersion,pendingInstallTranslationVersion;
+    QSettings settings; QString settingsPath,appDataPath,logPath; QLineEdit *pakEdit{},*sigEdit{},*targetEdit{}; QComboBox *channelBox{}; QLabel *statusLabel{},*gameDot{},*progressLabel{},*channelStatus{},*versionStatus{},*installAvailability{}; QPushButton *launchBtn{},*installBtn{},*refreshChannelsBtn{},*checkVersionBtn{},*cancelRequestBtn{},*downloadBtn{},*autoInstallBtn{},*uninstallBtn{},*verifyBtn{},*repairBtn{},*stopBackgroundBtn{}; QPlainTextEdit *diagnostic{},*preview{}; QProgressBar *progress{}; QWidget *progressWrap{}; QNetworkAccessManager *network{}; QNetworkReply *manifestReply{}; QTimer *requestTimer{}; QFile *downloadFile{}; QString downloadPartPath{},downloadFinalPath{},downloadExpectedHash{},downloadName{},downloadChannel{}; QList<TranslationChannel> channels; QHash<QString,TranslationManifest> manifests; bool busyNetwork{},networkCancelled{},downloadingPackage{},pendingAutoInstall{},startupAutoCheck{},launchPending{}; QString pendingInstallChannel,pendingInstallGame,pendingInstallResourceVersion,pendingInstallTranslationVersion;
     QString requestedChannel;
     void setChannels(const QList<TranslationChannel> &items){channels=items;const QString selected=settings.value("localizer/channel","over").toString();channelBox->clear();for(const auto &c:channels)channelBox->addItem(c.name,c.id);int index=channelBox->findData(selected);channelBox->setCurrentIndex(index<0?0:index);updateChannelStatus();}
     void loadChannelCache(){
@@ -1087,6 +1112,7 @@ private:
         downloadPartPath.clear(); downloadFinalPath.clear(); reply->deleteLater(); refreshDiagnostics();
     }
     void downloadSelectedPackage() {
+        if(launchPending)return;
         auto stopPending=[this](){if(pendingAutoInstall){pendingAutoInstall=false;channelBox->setEnabled(true);}};
         if (busyNetwork) { stopPending();channelStatus->setText("Предыдущий сетевой запрос ещё выполняется."); return; }
         const QString id = channelBox->currentData().toString();
@@ -1139,6 +1165,7 @@ private:
         connect(reply,&QNetworkReply::finished,this,[this,reply]{finishPackageDownload(reply);});
     }
     void requestManifest(const QUrl &url,const QString &purpose){
+        if(launchPending)return;
         if(busyNetwork){channelStatus->setText("Предыдущий сетевой запрос ещё выполняется.");return;}
         if(!trustedGitlabRawUrl(url)){channelStatus->setText("Запрос заблокирован: адрес не входит в разрешённый HTTPS путь GitLab.");return;}
         QNetworkRequest request(url);request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,QNetworkRequest::ManualRedirectPolicy);request.setHeader(QNetworkRequest::UserAgentHeader,"ECHO-Native/0.1 manifest-check");
@@ -1169,6 +1196,20 @@ private:
     void verifyInstalledFiles(){
         const auto games=discoverWutheringInstallations(steamRoots());if(games.size()!=1){channelStatus->setText(games.isEmpty()?"Проверка: Steam-установка Wuthering Waves не найдена.":"Проверка остановлена: найдено несколько установок игры.");return;}
         const auto state=selectedInstallState();channelStatus->setText(state.message);refreshAutoInstallControls();
+    }
+    void restoreMountOnStartup(){
+        const auto games=discoverWutheringInstallations(steamRoots());
+        if(games.size()!=1||games.first().gameDir.isEmpty())return;
+        const auto state=selectedInstallState();
+        if(!state.repairable||!EchoInstall::blockingProcesses(games.first().gameDir).isEmpty())return;
+        const auto result=EchoInstall::repair(appDataPath,state.currentResourceVersion);
+        logLine("Translation repair on startup: "+result.message);
+        updateChannelStatus();
+        refreshAutoInstallControls();
+        if(!result.ok){
+            channelStatus->setText("Не удалось автоматически восстановить запись перевода: "+result.message);
+            versionStatus->setText("Восстановление не выполнено");
+        }
     }
     void repairInstalledMount(){
         const auto games=discoverWutheringInstallations(steamRoots());if(games.size()!=1){channelStatus->setText("Восстановление доступно только при одной обнаруженной Steam-установке.");return;}
@@ -1345,6 +1386,20 @@ private:
     void logLine(const QString &line){QDir().mkpath(QFileInfo(logPath).absolutePath());QFile f(logPath);if(f.open(QIODevice::WriteOnly|QIODevice::Append|QIODevice::Text)){QTextStream out(&f);out<<line<<'\n';}}
     void launchGame(){
         {
+            if(launchPending)return;
+            if (busyNetwork) {
+                if(!manifestReply){channelStatus->setText("Сетевой запрос ещё завершается. Повторите запуск.");return;}
+                launchPending=true; networkCancelled=true; pendingAutoInstall=false; startupAutoCheck=false;
+                channelStatus->setText("Отменяем сетевой запрос перед запуском игры…");
+                auto *reply=manifestReply;
+                auto conn=std::make_shared<QMetaObject::Connection>();
+                *conn=connect(reply,&QNetworkReply::finished,this,[this,conn]{
+                    disconnect(*conn);
+                    QTimer::singleShot(0,this,[this]{launchPending=false;launchGame();});
+                });
+                reply->abort();
+                return;
+            }
             const auto installs=discoverWutheringInstallations(steamRoots());
             const QString steam=steamExecutable();
             if(installs.isEmpty()||steam.isEmpty()){QMessageBox::warning(this,"Steam не готов","Не найден Steam с установленной Wuthering Waves (appmanifest_3513350.acf). Проверьте библиотеки Steam.");refreshStatus();return;}
@@ -1385,8 +1440,9 @@ private:
                 return;
             }
             statusLabel->setText(launchCheck.ok?"Запрос запуска передан Steam (AppID 3513350).":"Запрос передан Steam. Проверьте предупреждение о параметрах запуска.");
-            logLine(QString("Steam launch request submitted (PID: %1).").arg(pid));
-            refreshDiagnostics();
+            logLine(QString("Steam launch request submitted (PID: %1). Closing ECHO.").arg(pid));
+            launchPending=true; launchBtn->setEnabled(false);
+            QTimer::singleShot(0, qApp, &QCoreApplication::quit);
             return;
         }
     }
@@ -1480,7 +1536,11 @@ int runInstallerTests() {
 }
 
 int runManifestTests() {
-    const QString base=QStringLiteral(ECHO_SOURCE_DIR)+"/research/manifests/";
+    QString base=QStringLiteral(ECHO_SOURCE_DIR)+"/research/manifests/";
+    if(!QFileInfo::exists(base+"wwmain-main2.json")){
+        base=QStringLiteral(ECHO_SOURCE_DIR)+"/tests/fixtures/manifests/";
+        fprintf(stdout,"INFO: official manifest fixtures absent; testing bundled synthetic fixtures\n");
+    }
     QFile indexFile(base+"wwmain-main2.json");if(!indexFile.open(QIODevice::ReadOnly)){fprintf(stderr,"FAIL: cannot read channel index fixture\n");return 1;}
     QList<TranslationChannel> channels;QString error;
     if(!parseChannelIndex(indexFile.readAll(),&channels,&error)||channels.size()!=3){fprintf(stderr,"FAIL: channel index parse: %s\n",qPrintable(error));return 1;}
@@ -1493,19 +1553,22 @@ int runManifestTests() {
     QFile over(base+"manifest_over.json");if(!over.open(QIODevice::ReadOnly)){fprintf(stderr,"FAIL: cannot read OVERLINK fixture\n");return 1;}QByteArray badManifest=over.readAll();badManifest.replace("https://gitlab.com/ECHOLaunch/updates/-/raw/main/over/text/","https://evil.example/");TranslationManifest bad;
     if(parseTranslationManifest(badManifest,"over",&bad,&error)){fprintf(stderr,"FAIL: untrusted package URL accepted\n");return 1;}
     if(trustedGitlabRawUrl(QUrl("http://gitlab.com/ECHOLaunch/updates/-/raw/main/a"))||trustedGitlabRawUrl(QUrl("https://gitlab.com.evil.example/ECHOLaunch/updates/-/raw/main/a"))){fprintf(stderr,"FAIL: URL allowlist accepted invalid origin\n");return 1;}
-    fprintf(stdout,"PASS: all three official text manifest fixtures, JSON/schema/URL allowlists; XXH64-verified package transfer is enabled\n");return 0;
+    fprintf(stdout,"PASS: all three channel manifest fixtures, JSON/schema/URL allowlists; XXH64-verified package transfer is enabled\n");return 0;
 }
 
 int runDownloadTests() {
     QString error;
-    if (xxh64File(QStringLiteral(ECHO_SOURCE_DIR)+"/research/packages/pakchunk0-WindowsNoEditor_10000_P.pak",&error)!="60f5ad3fd24f0244") {
+    const QString realPackage=QStringLiteral(ECHO_SOURCE_DIR)+"/research/packages/pakchunk0-WindowsNoEditor_10000_P.pak";
+    if (QFileInfo::exists(realPackage) && xxh64File(realPackage,&error)!="60f5ad3fd24f0244") {
         fprintf(stderr,"FAIL: real OVERLINK PAK XXH64 did not match manifest: %s\n",qPrintable(error)); return 1;
     }
+    if(!QFileInfo::exists(realPackage))fprintf(stdout,"SKIP: real OVERLINK PAK fixture is not included\n");
+    else fprintf(stdout,"PASS: real OVERLINK PAK XXH64=60f5ad3fd24f0244\n");
     QTemporaryDir temp; if(!temp.isValid()){fprintf(stderr,"FAIL: download test temporary directory unavailable\n");return 1;}
     const QString part=temp.path()+"/sample.part", final=temp.path()+"/verified.pak", wrong=temp.path()+"/wrong.part", wrongFinal=temp.path()+"/wrong.pak";
     if(!writeBytes(part,"verified mock bytes")){fprintf(stderr,"FAIL: valid package fixture setup\n");return 1;}
     const QString known=xxh64File(part,&error);
-    if(known.isEmpty()||!verifyAndPromotePackage(part,final,known,&error)||!QFileInfo(final).isFile()||QFileInfo::exists(part)){
+    if(known!="f8af61f15796673b"||!verifyAndPromotePackage(part,final,known,&error)||!QFileInfo(final).isFile()||QFileInfo::exists(part)){
         fprintf(stderr,"FAIL: valid package was not atomically promoted: %s\n",qPrintable(error));return 1;
     }
     if(!writeBytes(wrong,"tampered mock bytes")){fprintf(stderr,"FAIL: mismatch fixture setup\n");return 1;}
@@ -1515,7 +1578,7 @@ int runDownloadTests() {
     const QString empty=temp.path()+"/empty";if(!writeBytes(empty,"")||verifyAndPromotePackage(empty,temp.path()+"/empty.pak",known,&error)){
         fprintf(stderr,"FAIL: empty file was accepted as a package\n");return 1;
     }
-    fprintf(stdout,"PASS: real 70,949,699-byte OVERLINK PAK XXH64=60f5ad3fd24f0244; verified atomic promotion, mismatch rejection, and empty package rejection\n");return 0;
+    fprintf(stdout,"PASS: known XXH64 vector, verified atomic promotion, mismatch rejection, and empty package rejection\n");return 0;
 }
 
 int runLaunchTests() {
@@ -1678,7 +1741,7 @@ int runLaunchTests() {
 }
 
 int main(int argc,char **argv){
-    if(argc>1&&QByteArray(argv[1])=="--steam-wrap")return runSteamWrapper(argc,argv);
+    if(argc>1&&(QByteArray(argv[1])=="--steam-wrap"||QByteArray(argv[1])=="--steam-wrap-direct"))return runSteamWrapper(argc,argv);
     const bool smoke=argc>1&&QString::fromLocal8Bit(argv[1])=="--smoke-test";
     const bool resourceCheck=argc>1&&QString::fromLocal8Bit(argv[1])=="--resource-check";
     const bool installerTest=argc>1&&QString::fromLocal8Bit(argv[1])=="--installer-test";
