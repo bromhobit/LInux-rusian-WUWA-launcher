@@ -4,6 +4,12 @@ on:
     branches: [main]
     paths: ['.github/workflows/linux-packages.yml', 'native/**', 'tests/fps_*', 'tests/fixtures/**', 'tests/test-fps-unlock.sh', 'tests/test-steam-*.sh']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to upload packages to'
+        required: false
+        default: 'v0.3.5-2'
+        type: string
 permissions:
   contents: write
 jobs:
@@ -71,12 +77,13 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || 'v0.3.5-2' }}
         run: |
           set -euo pipefail
-          if gh release view v0.3.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload v0.3.5 ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5_amd64.deb --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5_amd64.deb --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create v0.3.5 ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5_amd64.deb --target "$GITHUB_SHA" --title "ECHO Native 0.3.5" --notes "Кнопка ECHO запускает игру напрямую через Steam; обычная кнопка Steam открывает официальный лаунчер. Один раз настройте параметры Steam в ECHO, сохранив исходную строку. При неоднозначном клиенте или качестве ресурсов откроется официальный лаунчер." --repo "$GITHUB_REPOSITORY"
+            gh release create "$RELEASE_TAG" ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5_amd64.deb --target "$GITHUB_SHA" --title "ECHO Native ${RELEASE_TAG#v}" --notes "Поддержка прямого и Steam-запуска (--steam-wrap-direct, ECHO_DIRECT=1) с проверкой и восстановлением установки перед стартом, а также восстановлением монтирования при запуске. Добавлена проверка SHA-1 при атомарном копировании файлов, улучшено определение процесса игры в Wine и исправлены ошибки совместимости с Qt 6.2 и отключения геймпада." --repo "$GITHUB_REPOSITORY"
           fi
 
 
