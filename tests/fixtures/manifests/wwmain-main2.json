@@ -1,0 +1,25 @@
+{
+  "TranslationChannels": [
+    {
+      "Id": "over",
+      "Name": "OVERLINK",
+      "Description": "Synthetic test fixture",
+      "ManifestUrl": "https://gitlab.com/ECHOLaunch/updates/-/raw/main/wwmain/channels/manifest_over.json",
+      "Enabled": true
+    },
+    {
+      "Id": "aniwie",
+      "Name": "Aniwie",
+      "Description": "Synthetic test fixture",
+      "ManifestUrl": "https://gitlab.com/ECHOLaunch/updates/-/raw/main/wwmain/channels/manifest_aniwie.json",
+      "Enabled": true
+    },
+    {
+      "Id": "qwikki",
+      "Name": "qwikki",
+      "Description": "Synthetic test fixture",
+      "ManifestUrl": "https://gitlab.com/ECHOLaunch/updates/-/raw/main/wwmain/channels/manifest_qwikki.json",
+      "Enabled": true
+    }
+  ]
+}

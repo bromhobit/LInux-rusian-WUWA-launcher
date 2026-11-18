@@ -62,13 +62,19 @@ QString transactionDir(const QString &appData) {
     const QString dir=root+"/"+QUuid::createUuid().toString(QUuid::WithoutBraces);
     return QDir().mkpath(dir)?dir:QString();
 }
-bool copyAtomic(const QString &from,const QString &to,QString *error) {
+bool copyAtomic(const QString &from,const QString &to,QString *error,bool *replaced=nullptr) {
+    if(replaced)*replaced=false;
     if(!noSymlinkChain(from)||!noSymlinkChain(to)){if(error)*error="Путь копирования содержит символическую ссылку.";return false;}
     QFile in(from);if(!in.open(QIODevice::ReadOnly)){if(error)*error=in.errorString();return false;}
     QSaveFile out(to);out.setDirectWriteFallback(false);if(!out.open(QIODevice::WriteOnly)){if(error)*error=out.errorString();return false;}
-    while(!in.atEnd()){QByteArray b=in.read(1024*1024);if(b.isEmpty()&&in.error()!=QFile::NoError){if(error)*error=in.errorString();out.cancelWriting();return false;}if(out.write(b)!=b.size()){if(error)*error=out.errorString();out.cancelWriting();return false;}}
+    QCryptographicHash copied(QCryptographicHash::Sha1);
+    while(!in.atEnd()){QByteArray b=in.read(1024*1024);if(b.isEmpty()&&in.error()!=QFile::NoError){if(error)*error=in.errorString();out.cancelWriting();return false;}copied.addData(b);if(out.write(b)!=b.size()){if(error)*error=out.errorString();out.cancelWriting();return false;}}
+    const QString expected=QString::fromLatin1(copied.result().toHex());
+    if(sha1File(from,error)!=expected){if(error)*error="Источник изменился во время копирования.";out.cancelWriting();return false;}
     if(!out.commit()){if(error)*error=out.errorString();return false;}
-    if(sha1File(from,error)!=sha1File(to,error)){QFile::remove(to);if(error)*error="Проверка копии SHA-1 не совпала.";return false;}return true;
+    if(replaced)*replaced=true;
+    if(sha1File(to,error)!=expected){if(error)*error="Проверка записанной копии SHA-1 не совпала.";return false;}
+    return true;
 }
 bool xxh64Matches(const QString &path,const QString &expected,QString *error) {
     QFile f(path);if(!f.open(QIODevice::ReadOnly)){if(error)*error=f.errorString();return false;}
@@ -232,9 +238,22 @@ QString detectGameProcess(const QByteArray &commRaw, const QByteArray &cmdRaw,
     if(canonicalRoot.isEmpty()||cmdRaw.isEmpty())return {};
     QByteArray cmd=cmdRaw.toLower();
     cmd.replace('\\','/');
-    if(!cmd.contains(canonicalRoot))return {};
     const QByteArray comm=commRaw.trimmed().toLower();
     const QByteArray first=cmd.split('\0').value(0);
+    if(!cmd.contains(canonicalRoot)){
+        // Wine may expose an S:/... path rather than a Linux path. A matching
+        // game process is ambiguous across installations, so fail closed.
+        const bool winePath=first.size()>3&&((first[0]>='a'&&first[0]<='z')||(first[0]>='A'&&first[0]<='Z'))&&first[1]==':'&&first[2]=='/';
+        if(winePath&&(comm.startsWith("client-win64")||first.endsWith("/client-win64-shipping.exe")))
+            return "игра Client-Win64-Shipping.exe (Wine)";
+        if(winePath&&first.contains("/wuthering waves/")&&
+           (comm=="launcher.exe"||comm.startsWith("launcher_main")||comm.startsWith("launcher_updat")||
+            comm.startsWith("krinstallextern")||comm.startsWith("wuthering wave")||
+            first.endsWith("/launcher.exe")||first.endsWith("/launcher_updater.exe")||
+            first.endsWith("/krinstallexternal.exe")||first.endsWith("/wuthering waves.exe")))
+            return "игра или лаунчер Wuthering Waves (Wine)";
+        return {};
+    }
     // Steam Proton may create a wine steam.exe proxy whose *argument* names
     // launcher.exe. It is not the actual launcher and must not block install.
     if(comm=="steam.exe"||comm=="bash"||comm=="sh"||comm=="codex")return {};
@@ -320,6 +339,7 @@ bool transformMount(const QByteArray &original,const QByteArray &entry,QByteArra
     const QByteArray prefix="Lang_en/RU/pakchunk0-WindowsNoEditor_10100_P,";
     for(int i=0;i<lines.size();++i){if(lines[i]=="::Mount::"){if(mount>=0){if(error)*error="В MountLang_en.txt повторяется ::Mount::.";return false;}mount=i;}if(lines[i]=="::Del::"){if(del>=0){if(error)*error="В MountLang_en.txt повторяется ::Del::.";return false;}del=i;}if(lines[i].startsWith(prefix)){if(owned>=0){if(error)*error="В MountLang_en.txt дублируется запись ECHO.";return false;}owned=i;}}
     if(mount<0||del<0||del<=mount){if(error)*error="MountLang_en.txt не содержит корректные секции ::Mount:: и ::Del::.";return false;}
+    if(owned>=0&&(owned<=mount||owned>=del)){if(error)*error="Запись ECHO находится вне секции ::Mount::; автоматическое изменение остановлено.";return false;}
     if(remove){if(owned>=0)lines.removeAt(owned);}else{
         if(owned>=0&&lines[owned]!=entry){if(error)*error="Запись ECHO уже существует с неизвестным содержимым; отказ от перезаписи.";return false;}
         if(owned<0)lines.insert(del,entry);
@@ -382,9 +402,13 @@ Result install(const QString &gameRoot,const QString &resourceVersion,const QStr
        (!owned&&QFileInfo::exists(targetPak))||
        (owned&&!reinstall&&sha1File(targetPak,nullptr)!=prior.value("sha1").toString()))
         return {false,"Состояние перевода изменилось; установка остановлена."};
-    if(!copyAtomic(cachedPak,targetPak,&error))return {false,"Не удалось записать перевод: "+error};
-    if(sha1File(targetPak,&error)!=sha1){rollbackPak();return {false,"Установленный PAK не прошёл SHA-1; выполнен откат."};}
-    if(!writeAtomic(mountPath,newMount,&error)){rollbackPak();return {false,"Mount не записан, PAK восстановлен: "+error};}
+    bool pakReplaced=false;
+    if(!copyAtomic(cachedPak,targetPak,&error,&pakReplaced)){
+        const bool rolledBack=!pakReplaced||rollbackPak();
+        return {false,"Не удалось записать перевод: "+error+(rolledBack?"":" Откат PAK не удался; резервная копия: "+previousPakBackup)};
+    }
+    if(sha1File(targetPak,&error)!=sha1){const bool ok=rollbackPak();return {false,ok?"Установленный PAK не прошёл SHA-1; выполнен откат.":"PAK не прошёл SHA-1; откат не удался. Резервная копия: "+previousPakBackup};}
+    if(!writeAtomic(mountPath,newMount,&error)){const bool ok=rollbackPak();return {false,(ok?"Mount не записан, PAK восстановлен: ":"Mount не записан; откат PAK не удался, резервная копия: "+previousPakBackup+". ")+error};}
     QJsonObject journal{{"gameRoot",canonical(gameRoot)},{"resourceVersion",resourceVersion},{"channel",channel},{"translationVersion",translationVersion},{"pakPath",targetPak},{"sha1",sha1},{"xxh64",xxh64.toLower()},{"entry",QString::fromUtf8(entry)},{"mountTable",mountTable},{"originalMountBackup",originalBackup},{"lastMountBackup",mountBackup},{"previousPakBackup",previousPakBackup}};
     if(!prior.isEmpty())journal.insert("previousJournalBackup",tx+"/translation-install.json");
     if(!writeJournal(journalPath,journal,&error)){
@@ -394,7 +418,7 @@ Result install(const QString &gameRoot,const QString &resourceVersion,const QStr
     return {true,QString("Установлен перевод %1 v%2. PAK проверен SHA-1.").arg(channel,translationVersion)};
 }
 
-Result uninstall(const QString &appDataPath) {
+static Result uninstallImpl(const QString &appDataPath,const std::function<void()> &afterBackup) {
     const QString journalPath=appDataPath+"/translation-install.json";QJsonObject j=readJournal(journalPath);if(j.isEmpty())return {false,"Нет действующей записи об установке ECHO."};
     if(!validOwnedJournal(j))return {false,"Журнал установки повреждён или содержит неверные пути."};
     const QString game=j.value("gameRoot").toString(),version=j.value("resourceVersion").toString(),pak=j.value("pakPath").toString();QString error;
@@ -418,6 +442,11 @@ Result uninstall(const QString &appDataPath) {
         return {false,"Не удалось сохранить Mount backup: "+error};
     if(!copyAtomic(pak,tx+"/installed-translation.pak",&error))
         return {false,"Не удалось сохранить резервную копию PAK: "+error};
+    if(afterBackup)afterBackup();
+    if(!noSymlinkChain(mount)||!noSymlinkChain(pak)||
+       readJournal(journalPath)!=j||readAll(mount,nullptr)!=current||
+       !QFileInfo(pak).isFile()||sha1File(pak,nullptr)!=j.value("sha1").toString()||gameRunning(game))
+        return {false,"Игра или файлы изменились во время резервного копирования. Удаление остановлено."};
     if(present&&!writeAtomic(mount,updated,&error))
         return {false,"Не удалось удалить запись ECHO из Mount: "+error};
     if(!QFile::remove(pak)){
@@ -428,6 +457,8 @@ Result uninstall(const QString &appDataPath) {
         return {false,"PAK удалён, но журнал приложения не удалён: "+journalPath+". Резервная копия PAK: "+tx};
     return {true,"Перевод удалён. Файл PAK и Mount сохранены в резервной копии: "+tx};
 }
+
+Result uninstall(const QString &appDataPath) { return uninstallImpl(appDataPath,{}); }
 
 QString installedStatus(const QString &appDataPath,const QString &gameRoot) {
     const auto state=inspect(appDataPath,gameRoot,{}, {}, {});
@@ -451,9 +482,12 @@ Inspection inspect(const QString &appDataPath,const QString &gameRoot,const QStr
     const QString expectedPak=recordedRoot+"/Client/Saved/Resources/"+s.installedResourceVersion+"/"+QString::fromLatin1(OwnedRelative)+".pak";
     QString error;const bool pakOk=pak==expectedPak&&noSymlinkChain(pak)&&QFileInfo(pak).isFile()&&inspectionSha1(pak,&error)==j.value("sha1").toString();
     QByteArray bytes;const bool mountReadable=noSymlinkChain(mount)&&QFileInfo(mount).isFile()&&(bytes=readAll(mount,nullptr)).size()>0;
-    const QByteArray entry=j.value("entry").toString().toUtf8();const bool lineOk=mountReadable&&!entry.isEmpty()&&hasExactLine(bytes,entry);
+    const QByteArray entry=j.value("entry").toString().toUtf8();
+    QByteArray checkedMount; QString mountError;
+    const bool mountValid=mountReadable&&!entry.isEmpty()&&transformMount(bytes,entry,&checkedMount,false,&mountError);
+    const bool lineOk=mountValid&&hasExactLine(bytes,entry)&&checkedMount==bytes;
     s.healthy=pakOk&&lineOk;
-    s.repairable=pakOk&&!lineOk&&!s.resourceVersionChanged&&mountReadable&&!entry.isEmpty();
+    s.repairable=pakOk&&!lineOk&&!s.resourceVersionChanged&&mountValid;
     s.reinstallable=!pakOk&&canReinstallMissingPak(j,recordedRoot,currentResourceVersion);
     if(s.healthy){
         if(s.resourceVersionChanged)s.message=QString("Перевод сохранён в ресурсах %1; обнаружена текущая версия %2.").arg(s.installedResourceVersion,currentResourceVersion);
@@ -556,6 +590,25 @@ int runAutoInstallTests() {
     const QString target=res+"/Lang_en/RU/"+PakName;if(EchoInstall::sha1File(target)!=EchoInstall::sha1File(pak)||!EchoInstall::installedStatus(app,root).startsWith("Установлен: over v3.7")){fprintf(stderr,"FAIL: installed verification\n");return 1;}
     QFile mf(mount);if(!mf.open(QIODevice::ReadOnly))return 1;QByteArray patched=mf.readAll();if(!patched.startsWith("\xEF\xBB\xBF")||!patched.contains("\r\n")||!patched.contains(third)||patched.indexOf("Lang_en/RU/")>patched.indexOf("::Del::"))return 1;
     const auto healthy=inspect(app,root,"3.7.0","over",xxh);if(!healthy.owned||!healthy.healthy||healthy.packageDiffers||healthy.selectedChannelDiffers)return 1;
+    const auto savedEntry=readJournal(app+"/translation-install.json").value("entry").toString().toUtf8();
+    const QByteArray wrongSection="::Mount::\n::Del::\n"+savedEntry+"\n";
+    QByteArray rejectedMount;
+    if(!put(mount,wrongSection)||inspect(app,root,"3.7.0","over",xxh).healthy||inspect(app,root,"3.7.0","over",xxh).repairable||
+       transformMount(wrongSection,savedEntry,&rejectedMount,false,&err)||!put(mount,patched)){
+        fprintf(stderr,"FAIL: entry outside Mount section accepted\n");return 1;
+    }
+    bool updaterProbe=false;
+    const QByteArray wineCmd="S:\\steamapps\\common\\Wuthering Waves\\Wuthering Waves Game\\Client\\Binaries\\Win64\\Client-Win64-Shipping.exe";
+    if(detectGameProcess("Client-Win64-Sh",wineCmd,"/unrelated/linux/root",&updaterProbe).isEmpty()||updaterProbe){
+        fprintf(stderr,"FAIL: Wine client not detected\n");return 1;
+    }
+    const QByteArray changedDuringUninstall=patched+"# concurrent change\r\n";
+    bool mutationDone=false;
+    const auto stoppedRemoval=uninstallImpl(app,[&]{mutationDone=put(mount,changedDuringUninstall);});
+    if(!mutationDone||stoppedRemoval.ok||readAll(mount,nullptr)!=changedDuringUninstall||
+       !QFileInfo::exists(target)||!put(mount,patched)){
+        fprintf(stderr,"FAIL: uninstall overwrote concurrent change\n");return 1;
+    }
     // Refreshing status may reuse a hash only until the actual PAK changes.
     const QByteArray originalPak(payload,sizeof(payload)-1);
     if(!put(target,QByteArray(originalPak.size(),'!'))||inspect(app,root,"3.7.0","over",xxh).healthy||

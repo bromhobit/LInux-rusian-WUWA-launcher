@@ -3,6 +3,10 @@ set -Eeuo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 launcher="$project_dir/scripts/echo-proton.sh"
+if [[ ! -x "$launcher" || ! -f "$project_dir/input/ECHO.exe" ]]; then
+  echo "SKIP: legacy Proton launcher and ECHO.exe are not included in this native-only checkout"
+  exit 0
+fi
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 
