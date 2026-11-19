@@ -66,13 +66,33 @@ jobs:
           printf '#!/bin/sh\nexport APPIMAGE_EXTRACT_AND_RUN=1\nexec /opt/echo-native/ECHO-Native.AppImage "$@"\n' > deb/usr/bin/echo-native
           chmod 755 deb/usr/bin/echo-native
           install -m644 packaging/echo-native.desktop deb/usr/share/applications/echo-native.desktop
+          sed -i -e 's/^TryExec=echo-native$/TryExec=\/usr\/bin\/echo-native/' \
+                 -e 's/^Exec=echo-native$/Exec=\/usr\/bin\/echo-native/' \
+                 deb/usr/share/applications/echo-native.desktop
           install -m644 packaging/echo-native.svg deb/usr/share/icons/hicolor/scalable/apps/echo-native.svg
-          cp packaging/echo-native.install deb/DEBIAN/postinst
-          printf '\n_refresh_echo_desktop\n' >> deb/DEBIAN/postinst
-          chmod 755 deb/DEBIAN/postinst
-          printf 'Package: echo-native\nVersion: 0.3.5\nArchitecture: amd64\nMaintainer: ECHO Native\nDepends: libc6 (>= 2.35), libstdc++6\nSection: utils\nPriority: optional\nDescription: Wuthering Waves Russian translation launcher\n' > deb/DEBIAN/control
-          dpkg-deb --build --root-owner-group deb echo-native_0.3.5_amd64.deb
-          dpkg-deb --info echo-native_0.3.5_amd64.deb
+          { printf '#!/bin/sh\n'; cat packaging/echo-native.install; printf '\nif [ "$1" = configure ]; then post_install; fi\n'; } > deb/DEBIAN/postinst
+          { printf '#!/bin/sh\n'; cat packaging/echo-native.install; printf '\nif [ "$1" = remove ]; then post_remove; fi\n'; } > deb/DEBIAN/postrm
+          chmod 755 deb/DEBIAN/postinst deb/DEBIAN/postrm
+          printf 'Package: echo-native\nVersion: 0.3.5-2\nArchitecture: amd64\nMaintainer: ECHO Native\nDepends: libc6 (>= 2.35), libstdc++6\nSection: utils\nPriority: optional\nDescription: Wuthering Waves Russian translation launcher\n' > deb/DEBIAN/control
+          dpkg-deb --build --root-owner-group deb echo-native_0.3.5-2_amd64.deb
+          dpkg-deb --info echo-native_0.3.5-2_amd64.deb
+      - name: Verify DEB installation and migration
+        run: |
+          set -euo pipefail
+          sudo useradd -m echo-test
+          legacy=/home/echo-test/.local/share/echo-native/bin/echo-native
+          sudo mkdir -p "${legacy%/*}"
+          printf '#!/bin/sh\nprintf "legacy launcher\\n"\n' | sudo tee "$legacy" >/dev/null
+          sudo chmod +x "$legacy"
+          sudo chown -R echo-test:echo-test /home/echo-test/.local
+          sudo dpkg -i echo-native_0.3.5-2_amd64.deb
+          test "$(readlink -- "$legacy")" = /usr/bin/echo-native
+          test "$("$legacy.pacman-backup")" = 'legacy launcher'
+          grep -Fxq 'Exec=/usr/bin/echo-native' /usr/share/applications/echo-native.desktop
+          QT_QPA_PLATFORM=xcb xvfb-run -a /usr/bin/echo-native --smoke-test
+          sudo dpkg -r echo-native
+          test ! -L "$legacy"
+          test "$("$legacy")" = 'legacy launcher'
       - name: Add packages to existing release
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
@@ -81,9 +101,9 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5_amd64.deb --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$RELEASE_TAG" ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5-2_amd64.deb --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$RELEASE_TAG" ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5_amd64.deb --target "$GITHUB_SHA" --title "ECHO Native ${RELEASE_TAG#v}" --notes "Поддержка прямого и Steam-запуска (--steam-wrap-direct, ECHO_DIRECT=1) с проверкой и восстановлением установки перед стартом, а также восстановлением монтирования при запуске. Добавлена проверка SHA-1 при атомарном копировании файлов, улучшено определение процесса игры в Wine и исправлены ошибки совместимости с Qt 6.2 и отключения геймпада." --repo "$GITHUB_REPOSITORY"
+            gh release create "$RELEASE_TAG" ECHO-Native-0.3.5-x86_64.AppImage echo-native_0.3.5-2_amd64.deb --target "$GITHUB_SHA" --title "ECHO Native ${RELEASE_TAG#v}" --notes "Поддержка прямого и Steam-запуска (--steam-wrap-direct, ECHO_DIRECT=1) с проверкой и восстановлением установки перед стартом, а также восстановлением монтирования при запуске. Добавлена проверка SHA-1 при атомарном копировании файлов, улучшено определение процесса игры в Wine и исправлены ошибки совместимости с Qt 6.2 и отключения геймпада." --repo "$GITHUB_REPOSITORY"
           fi
 
 
