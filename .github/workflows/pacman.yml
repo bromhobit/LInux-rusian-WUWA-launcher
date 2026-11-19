@@ -7,6 +7,11 @@ on:
       - 'packaging/**'
       - 'scripts/install-echo-native.sh'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to upload the Arch package to'
+        required: true
+        default: 'v0.3.5-2'
 permissions:
   contents: write
 jobs:
@@ -28,7 +33,7 @@ jobs:
           revision=$(sed -n 's/^pkgrel=//p' packaging/PKGBUILD)
           package="echo-native-${version}-${revision}-x86_64.pkg.tar.zst"
           echo "ARCH_PACKAGE=$package" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=v$version" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=${{ inputs.release_tag }}" >> "$GITHUB_ENV"
           tar -czf "/tmp/echo-build/echo-native-source-$version.tar.gz" native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
           cp packaging/PKGBUILD /tmp/echo-build/PKGBUILD
           cp packaging/echo-native.install /tmp/echo-build/echo-native.install
