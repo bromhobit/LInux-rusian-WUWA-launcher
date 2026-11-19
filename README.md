@@ -26,7 +26,7 @@ ECHO Native помогает установить, обновить и восс�
   ./ECHO-Native-0.3.5-x86_64.AppImage
   ```
   Для обычного запуска AppImage нужна поддержка FUSE; если её нет, можно запустить с `APPIMAGE_EXTRACT_AND_RUN=1`.
-- **DEB** — для Debian/Ubuntu: скачайте `echo-native_0.3.5_amd64.deb` и установите через менеджер пакетов либо командой `sudo apt install ./echo-native_0.3.5_amd64.deb`. Пакет содержит AppImage и запускает его с извлечением.
+- **DEB** — для Debian/Ubuntu: скачайте `echo-native_0.3.5-2_amd64.deb` и установите через менеджер пакетов либо командой `sudo apt install ./echo-native_0.3.5-2_amd64.deb`. Пакет содержит AppImage и запускает его с извлечением.
 
 Для **Arch Linux и CachyOS** скачайте [`echo-native-0.3.5-2-x86_64.pkg.tar.zst`](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/releases/download/v0.3.5-2/echo-native-0.3.5-2-x86_64.pkg.tar.zst) и установите командой:
 
