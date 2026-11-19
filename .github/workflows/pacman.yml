@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/pacman.yml'
       - 'packaging/**'
+      - 'scripts/install-echo-native.sh'
   workflow_dispatch:
 permissions:
   contents: write
@@ -23,31 +24,54 @@ jobs:
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
           mkdir -p /tmp/echo-build
-          tar -czf /tmp/echo-build/echo-native-source-0.3.5.tar.gz native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
+          version=$(sed -n 's/^pkgver=//p' packaging/PKGBUILD)
+          revision=$(sed -n 's/^pkgrel=//p' packaging/PKGBUILD)
+          package="echo-native-${version}-${revision}-x86_64.pkg.tar.zst"
+          echo "ARCH_PACKAGE=$package" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=v$version" >> "$GITHUB_ENV"
+          tar -czf "/tmp/echo-build/echo-native-source-$version.tar.gz" native packaging/echo-native.desktop packaging/echo-native.svg packaging/LICENSE-PACKAGING packaging/normalize-elf-isa.py
           cp packaging/PKGBUILD /tmp/echo-build/PKGBUILD
           cp packaging/echo-native.install /tmp/echo-build/echo-native.install
           chown -R builder:builder /tmp/echo-build
           cd /tmp/echo-build
           runuser -u builder -- env HOME=/home/builder makepkg --noconfirm --clean
-          cp echo-native-0.3.5-1-x86_64.pkg.tar.zst "$GITHUB_WORKSPACE/"
+          cp "$package" "$GITHUB_WORKSPACE/"
       - name: Verify package installation
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /home/builder/.local/share/applications /home/builder/.config/menus
+          legacy=/home/builder/.local/share/echo-native/bin/echo-native
+          mkdir -p "${legacy%/*}" /home/builder/.local/bin /home/builder/.local/share/applications /home/builder/.config/menus
+          printf '#!/bin/sh\nprintf "legacy launcher\\n"\n' > "$legacy"
+          chmod +x "$legacy"
+          ln -s "$legacy" /home/builder/.local/bin/echo-native
           printf '[Desktop Entry]\nType=Application\nName=ECHO Native\nExec="/home/builder/.local/share/echo-native/bin/echo-native"\n' > /home/builder/.local/share/applications/echo-native.desktop
           printf '<Menu>\n <Menu>\n  <Name>Games</Name>\n  <Exclude>\n   <Filename>olympus.desktop</Filename>\n   <Filename>echo-native.desktop</Filename>\n  </Exclude>\n </Menu>\n <Menu>\n  <Name>.hidden</Name>\n  <Include>\n   <Filename>echo-native.desktop</Filename>\n  </Include>\n </Menu>\n</Menu>\n' > /home/builder/.config/menus/applications-kmenuedit.menu
           chown -R builder:builder /home/builder/.local /home/builder/.config
-          pacman -U --noconfirm ./echo-native-0.3.5-1-x86_64.pkg.tar.zst
+          pacman -U --noconfirm "./$ARCH_PACKAGE"
+          test "$(readlink -- "$legacy")" = /usr/bin/echo-native
+          test "$(readlink -f /home/builder/.local/bin/echo-native)" = /usr/bin/echo-native
+          test "$(stat -c '%U' "$legacy.pacman-backup")" = builder
+          test "$("$legacy.pacman-backup")" = 'legacy launcher'
+          runuser -u builder -- env HOME=/home/builder bash scripts/install-echo-native.sh
+          pacman -U --noconfirm "./$ARCH_PACKAGE"
+          test "$(readlink -- "$legacy")" = /usr/bin/echo-native
+          test "$("$legacy.pacman-backup")" = 'legacy launcher'
           test ! -e /home/builder/.local/share/applications/echo-native.desktop
           ! grep -q 'echo-native.desktop' /home/builder/.config/menus/applications-kmenuedit.menu
           grep -q 'olympus.desktop' /home/builder/.config/menus/applications-kmenuedit.menu
           test "$(stat -c '%U:%G' /home/builder/.config/menus/applications-kmenuedit.menu)" = "builder:builder"
           test -f /usr/share/applications/echo-native.desktop
+          grep -Fxq 'Exec=/usr/bin/echo-native' /usr/share/applications/echo-native.desktop
+          grep -Fxq 'TryExec=/usr/bin/echo-native' /usr/share/applications/echo-native.desktop
           grep -q '^Categories=Game;$' /usr/share/applications/echo-native.desktop
           QT_QPA_PLATFORM=offscreen /usr/bin/echo-native --smoke-test
           ldd /usr/bin/echo-native | tee /tmp/echo-ldd.txt
           ! grep -q 'not found' /tmp/echo-ldd.txt
+          pacman -R --noconfirm echo-native
+          test ! -L "$legacy"
+          test "$("$legacy")" = 'legacy launcher'
+          test ! -e "$legacy.pacman-backup"
       - name: Upload to release
         if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
@@ -56,13 +80,13 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in {1..40}; do
-            if gh release view v0.3.5 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release upload v0.3.5 echo-native-0.3.5-1-x86_64.pkg.tar.zst --repo "$GITHUB_REPOSITORY" --clobber
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$RELEASE_TAG" "$ARCH_PACKAGE" --repo "$GITHUB_REPOSITORY" --clobber
               exit 0
             fi
             sleep 30
           done
-          echo 'Release v0.3.5 was not created in time' >&2
+          echo "Release $RELEASE_TAG was not created in time" >&2
           exit 1
 
 

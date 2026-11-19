@@ -1,7 +1,7 @@
 # Maintainer: ECHO Native
 pkgname=echo-native
 pkgver=0.3.5
-pkgrel=1
+pkgrel=2
 pkgdesc='Graphical Linux launcher for Wuthering Waves Russian localization'
 arch=('x86_64')
 url='https://github.com/bromhobit/LInux-rusian-WUWA-launcher'
@@ -29,6 +29,9 @@ package() {
   DESTDIR="$pkgdir" cmake --install "$srcdir/build"
   python "$srcdir/packaging/normalize-elf-isa.py" "$pkgdir/usr/bin/echo-native"
   install -Dm644 "$srcdir/packaging/echo-native.desktop" "$pkgdir/usr/share/applications/echo-native.desktop"
+  sed -i -e 's/^TryExec=echo-native$/TryExec=\/usr\/bin\/echo-native/' \
+         -e 's/^Exec=echo-native$/Exec=\/usr\/bin\/echo-native/' \
+         "$pkgdir/usr/share/applications/echo-native.desktop"
   install -Dm644 "$srcdir/packaging/echo-native.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/echo-native.svg"
   install -Dm644 "$srcdir/packaging/LICENSE-PACKAGING" "$pkgdir/usr/share/licenses/echo-native/LICENSE"
 }

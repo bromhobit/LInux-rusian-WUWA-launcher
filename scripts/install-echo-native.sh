@@ -2,7 +2,14 @@
 set -Eeuo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 project_dir="$(cd -- "$script_dir/.." && pwd -P)"
-prefix="${1:-${XDG_DATA_HOME:-$HOME/.local/share}/echo-native}"
+default_prefix="${XDG_DATA_HOME:-$HOME/.local/share}/echo-native"
+prefix="${1:-$default_prefix}"
+if [[ -x /usr/bin/echo-native ]] &&
+   { [[ "$prefix" == "$default_prefix" && -f /usr/share/applications/echo-native.desktop ]] ||
+     [[ -L "$prefix/bin/echo-native" && "$(readlink -- "$prefix/bin/echo-native")" == /usr/bin/echo-native ]]; }; then
+  printf 'ECHO Native is already installed as a system package: /usr/bin/echo-native\n'
+  exit 0
+fi
 binary="$project_dir/build/native/echo-native"
 [[ -x "$binary" ]] || { printf 'Build first: cmake -S "%s/native" -B "%s/build/native" && cmake --build "%s/build/native"\n' "$project_dir" "$project_dir" "$project_dir" >&2; exit 1; }
 mkdir -p -- "$prefix/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"

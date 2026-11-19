@@ -1,3 +1,46 @@
+_update_legacy_echo_launcher() {
+  getent passwd | while IFS=: read -r user_name password uid gid gecos home_dir login_shell; do
+    [ "$uid" != 0 ] || continue
+    case "$home_dir" in
+      /*) ;;
+      *) continue ;;
+    esac
+    launcher="$home_dir/.local/share/echo-native/bin/echo-native"
+    [ -e "$launcher" ] || [ -L "$launcher" ] || continue
+
+    # Pacman runs as root. Only the account owner should modify its launcher.
+    if ! runuser -u "$user_name" -- /bin/bash -s -- "$1" "$launcher" <<'BASH'
+set -e
+operation=$1
+launcher=$2
+package_launcher=/usr/bin/echo-native
+backup="$launcher.pacman-backup"
+
+if [[ $operation == restore ]]; then
+  if [[ -L $launcher && $(readlink -- "$launcher") == "$package_launcher" &&
+        ! -L $backup && -f $backup && -O $backup && -x $backup ]]; then
+    mv -Tf -- "$backup" "$launcher"
+  fi
+  exit 0
+fi
+
+[[ -x $package_launcher && ! -L $launcher && -f $launcher && -O $launcher && -x $launcher ]] || exit 0
+stage=$(mktemp -d -- "${launcher%/*}/.pacman-migration.XXXXXX")
+trap 'rm -f -- "$stage/echo-native"; rmdir -- "$stage"' EXIT
+ln -s -- "$package_launcher" "$stage/echo-native"
+
+# Keep an existing backup only if it is the same file from an interrupted migration.
+if [[ -L $backup || ! $launcher -ef $backup ]]; then
+  ln -T -- "$launcher" "$backup"
+fi
+mv -Tf -- "$stage/echo-native" "$launcher"
+BASH
+    then
+      printf 'echo-native: could not %s the legacy launcher for %s\n' "$1" "$user_name" >&2
+    fi
+  done
+}
+
 _refresh_echo_desktop() {
   rm -f /root/.local/share/applications/echo-native.desktop 2>/dev/null || true
   if [ -f /root/.config/menus/applications-kmenuedit.menu ]; then
@@ -43,13 +86,15 @@ _refresh_echo_desktop() {
 }
 
 post_install() {
+  _update_legacy_echo_launcher migrate
   _refresh_echo_desktop
 }
 
 post_upgrade() {
-  _refresh_echo_desktop
+  post_install
 }
 
 post_remove() {
+  _update_legacy_echo_launcher restore
   _refresh_echo_desktop
 }

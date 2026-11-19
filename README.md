@@ -28,11 +28,13 @@ ECHO Native помогает установить, обновить и восс�
   Для обычного запуска AppImage нужна поддержка FUSE; если её нет, можно запустить с `APPIMAGE_EXTRACT_AND_RUN=1`.
 - **DEB** — для Debian/Ubuntu: скачайте `echo-native_0.3.5_amd64.deb` и установите через менеджер пакетов либо командой `sudo apt install ./echo-native_0.3.5_amd64.deb`. Пакет содержит AppImage и запускает его с извлечением.
 
-Для **Arch Linux и CachyOS** скачайте из того же релиза файл `echo-native-0.3.5-1-x86_64.pkg.tar.zst` и установите командой:
+Для **Arch Linux и CachyOS** скачайте [`echo-native-0.3.5-2-x86_64.pkg.tar.zst`](https://github.com/bromhobit/LInux-rusian-WUWA-launcher/releases/download/v0.3.5/echo-native-0.3.5-2-x86_64.pkg.tar.zst) и установите командой:
 
 ```bash
-sudo pacman -U ./echo-native-0.3.5-1-x86_64.pkg.tar.zst
+sudo pacman -U ./echo-native-0.3.5-2-x86_64.pkg.tar.zst
 ```
+
+При переходе с прежней установки в `~/.local/share/echo-native/bin` пакет сохраняет старый исполняемый файл и перенаправляет существующие ярлыки Steam на версию из `pacman`. При удалении пакета прежний файл восстанавливается.
 
 На стандартной SteamOS системный раздел защищён от записи; для неё удобнее AppImage. Пакеты 0.3.5 прошли автоматические проверки; работа со всеми дистрибутивами и реальной игрой ещё не проверена.
 
